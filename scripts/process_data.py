@@ -34,18 +34,21 @@ def process_data(hrv_raw: dict, features_df: pd.DataFrame) -> dict:
     Returns:
         dict: Processed data combining HRV and features
     """
-    data_features_new = {}
+    data_features_new = []
 
-    for id_, hrv_data in hrv_raw.items():
+    idx = 0
+    for patient_id, hrv_data in hrv_raw.items():
         # Create a new id entry in data_features_new
-        data_features_new[int(id_)] = {}
+        data_features_new = {
+            "patient_id": patient_id,
+        }
 
         # Add all HRV features
         for feature in hrv_data.keys():
-            data_features_new[int(id_)][feature] = hrv_data[feature]
+            data_features_new[idx][feature] = hrv_data[feature]
 
         # Add features from features_df
-        row = features_df.loc[features_df["Unnamed: 0"] == int(id_)]
+        row = features_df.loc[features_df["Unnamed: 0"] == int(patient_id)]
 
         # Add all columns except Unnamed: 0 as features
         for col in features_df.columns:
@@ -63,7 +66,9 @@ def process_data(hrv_raw: dict, features_df: pd.DataFrame) -> dict:
                 feature_name = feature_name.replace("/", "_")
 
                 # Add feature to dictionary
-                data_features_new[int(id_)][feature_name] = row[col].values[0]
+                data_features_new[idx][feature_name] = row[col].values[0]
+
+        idx += 1
 
     return data_features_new
 
