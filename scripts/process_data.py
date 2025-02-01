@@ -1,7 +1,8 @@
 import os
 import pandas as pd
 import pickle
-from typing import Tuple
+import random
+from typing import Tuple, List, Dict, Any
 
 
 def load_data(hrv_path: str, features_path: str) -> Tuple[dict, pd.DataFrame]:
@@ -34,18 +35,17 @@ def process_data(hrv_raw: dict, features_df: pd.DataFrame) -> dict:
     Returns:
         dict: Processed data combining HRV and features
     """
-    data_features_new = []
+    data_features = []
 
-    idx = 0
     for patient_id, hrv_data in hrv_raw.items():
-        # Create a new id entry in data_features_new
-        data_features_new = {
+        # Create a new id entry in data_feature
+        data_feature = {
             "patient_id": patient_id,
         }
 
         # Add all HRV features
         for feature in hrv_data.keys():
-            data_features_new[idx][feature] = hrv_data[feature]
+            data_feature[feature] = hrv_data[feature]
 
         # Add features from features_df
         row = features_df.loc[features_df["Unnamed: 0"] == int(patient_id)]
@@ -66,11 +66,67 @@ def process_data(hrv_raw: dict, features_df: pd.DataFrame) -> dict:
                 feature_name = feature_name.replace("/", "_")
 
                 # Add feature to dictionary
-                data_features_new[idx][feature_name] = row[col].values[0]
+                data_feature[feature_name] = row[col].values[0]
 
-        idx += 1
+        data_features.append(data_feature)
 
-    return data_features_new
+    return data_features
+
+
+def create_train_val_split(
+    samples: List[Dict[str, Any]], train_val_ratio: float = 0.8, random_seed: int = 42
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Create train and validation splits based on patient IDs while ensuring patients
+    with neuropathy are distributed across both sets.
+
+    Args:
+        samples (List[Dict[str, Any]]): List of dictionaries containing patient data
+        train_val_ratio (float): Ratio of training data (default: 0.8)
+        random_seed (int): Random seed for reproducibility (default: 42)
+
+    Returns:
+        Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]: Tuple of (train_samples, val_samples)
+    """
+    # Get patient IDs with and without neuropathy
+    patient_ids_with_neuropathy = set(
+        sample["patient_id"]
+        for sample in samples
+        if int(sample["diabetic_peripheral_neuropathy"]) == 1
+    )
+
+    patient_ids_without_neuropathy = set(
+        sample["patient_id"]
+        for sample in samples
+        if int(sample["diabetic_peripheral_neuropathy"]) == 0
+    )
+
+    # Convert to sorted lists for reproducibility
+    neuropathy_ids = sorted(list(patient_ids_with_neuropathy))
+    non_neuropathy_ids = sorted(list(patient_ids_without_neuropathy))
+
+    # Set random seed and shuffle non-neuropathy IDs
+    random.seed(random_seed)
+    random.shuffle(non_neuropathy_ids)
+
+    # Split non-neuropathy IDs
+    split_idx = int(train_val_ratio * len(non_neuropathy_ids))
+    train_non_neuropathy_ids = non_neuropathy_ids[:split_idx]
+    val_non_neuropathy_ids = non_neuropathy_ids[split_idx:]
+
+    # Split neuropathy IDs (hardcoded split as in notebook)
+    train_neuropathy_ids = ["20010826", "20101822", "20123017"]
+    val_neuropathy_ids = ["19101619"]
+
+    # Combine IDs for final splits
+    train_ids = train_non_neuropathy_ids + train_neuropathy_ids
+    val_ids = val_non_neuropathy_ids + val_neuropathy_ids
+
+    # Create train and validation datasets
+    train_samples = [sample for sample in samples if sample["patient_id"] in train_ids]
+    val_samples = [sample for sample in samples if sample["patient_id"] in val_ids]
+
+    return train_samples, val_samples
 
 
 if __name__ == "__main__":
@@ -94,3 +150,15 @@ if __name__ == "__main__":
     # Save processed data to pickle file
     with open(processed_data_path, "wb") as f:
         pickle.dump(processed_data, f)
+
+    # Create train and validation splits
+    train_samples, val_samples = create_train_val_split(processed_data)
+
+    train_path = os.path.join(parent_dir, "data", "train.pkl")
+    val_path = os.path.join(parent_dir, "data", "val.pkl")
+
+    # Save train and validation splits to pickle files
+    with open(train_path, "wb") as f:
+        pickle.dump(train_samples, f)
+    with open(val_path, "wb") as f:
+        pickle.dump(val_samples, f)
