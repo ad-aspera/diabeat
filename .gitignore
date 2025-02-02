@@ -12,3 +12,4 @@ wheels/
 
 # Custom
 test.ipynb
+logs/

@@ -1,0 +1,74 @@
+model:
+  # Model architecture
+  channels: [1, 32, 64, 128]  # [input, conv1, conv2, conv3]
+  kernels: [15, 31, 61]  # [conv1, conv2, conv3]
+  fc_dims: [64]  # Fully connected layer dimensions
+  # n_beats_per_sample: 600  # RR sequence length
+
+  # Training hyperparameters
+  optim:
+    # Optimizer type. Only "adam" is supported currently.
+    optimizer_type: "adam"
+    learning_rate: 0.0001
+    dropout_rate: 0.5
+
+data:
+  # path to the hrv data directory
+  hrv_data_dir: null  # This needs to be specified at runtime
+  # number of peaks per sample
+  n_peaks_per_sample: 600  # 600 peaks ~= 10 minutes of recording
+
+  # data loader config params
+  train:
+    batch_size: 8
+    num_workers: 4
+    shuffle: true
+    pin_memory: true
+
+  val:
+    batch_size: 8
+    num_workers: 4
+    shuffle: false
+    pin_memory: true
+
+
+trainer:
+  accelerator: "gpu"
+  devices: 1
+  precision: 16
+  strategy: null
+  epochs: 100
+  log_every_n_steps: 50
+  enable_progress_bar: true
+  val_check_interval: 1.0
+  check_val_every_n_epoch: 1
+  limit_train_batches: 1.0
+  limit_val_batches: 1.0
+  overfit_batches: 0.0
+  accumulate_grad_batches: 1
+  detect_anomaly: false
+  deterministic: false
+  grad_clip_val: null
+  grad_clip_algorithm: null
+  checkpoint_id: null
+  
+  callbacks:
+    early_stopping:
+      enabled: true
+      monitor: "val/loss"
+      patience: 10
+      min_delta: 0.0001
+      mode: "min"
+      verbose: true
+
+    stochastic_weight_averaging:
+      enabled: false
+      lrs: 0.001
+      swa_epoch_start: 0.8
+      annealing_epochs: 5
+      annealing_strategy: "cos"
+      
+    learning_rate_monitor:
+      enabled: true
+      logging_interval: "step"
+      log_momentum: false

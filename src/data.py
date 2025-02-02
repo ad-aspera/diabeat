@@ -61,13 +61,25 @@ class HRVDataset(Dataset):
         features = self.raw_data[idx]
         hrv_data = features[sleep_stage][0]
 
+        # Check if we have enough data points
+        if len(hrv_data) < self.n_peaks_per_sample:
+            print("FOUND SHORT DATA", features)
+            # Either pad with zeros/repeat the data
+            hrv_data = np.pad(
+                hrv_data, (0, self.n_peaks_per_sample - len(hrv_data)), mode="wrap"
+            )
+
         # obtain a random start index of the chunk
-        start_idx = random.randint(0, len(hrv_data) - self.n_peaks_per_sample + 1)
+        start_idx = random.randint(0, len(hrv_data) - self.n_peaks_per_sample)
         end_idx = start_idx + self.n_peaks_per_sample
 
         x = hrv_data[start_idx:end_idx].astype(np.float32)
         label = features["diabetic_peripheral_neuropathy"].astype(np.float32)
-        # return the chunk of data and the features
+
+        # Convert to tensor here to ensure consistent shape
+        x = torch.from_numpy(x)
+        label = torch.tensor(label)
+
         return (x, label)
 
 
