@@ -3,46 +3,21 @@ import pickle
 import random
 from typing import Optional, Tuple, Literal
 import numpy as np
-from dataclasses import dataclass
+from omegaconf import OmegaConf
 import torch
 from torch.utils.data import Dataset, DataLoader
 import lightning as pl
 
 
 SLEEP_STAGES = ["DS", "REM", "RS"]
-
-
-@dataclass
-class HRVDataConfig:
-    # path to the hrv data directory
-    hrv_data_dir: str
-    # split to use
-    split: Literal["train", "val"]
-    # number of peaks per sample
-    # 600 peaks ~= 10 minutes of recording
-    n_peaks_per_sample: int = 600
-
-    # data loader config params
-    train_batch_size: int = 8
-    val_batch_size: int = 8
-
-    train_num_workers: int = 4
-    val_num_workers: int = 4
-
-    train_shuffle: bool = True
-    val_shuffle: bool = False
-
-    train_pin_memory: bool = True
-    val_pin_memory: bool = True
+dpn_label = "diabetic_peripheral_neuropathy"
 
 
 class HRVDataset(Dataset):
-    def __init__(self, config: HRVDataConfig):
+    def __init__(self, config: OmegaConf):
         """
         Args:
-            hrv_data_dir (str): Directory containing ECG CSV files
-            split (str): "train" or "val"
-            participant_characteristics_path (str): Path to participant characteristics CSV
+            config (OmegaConf): Omegaconf configuration object containing data parameters
         """
         # Load raw HRV data
         hrv_data_path = os.path.join(config.hrv_data_dir, f"{config.split}.pkl")
@@ -52,9 +27,20 @@ class HRVDataset(Dataset):
         self.n_peaks_per_sample = config.n_peaks_per_sample
 
     def __len__(self) -> int:
+        """Return the total number of samples in the dataset."""
         return len(self.raw_data)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Get a single sample from the dataset.
+
+        Args:
+            idx (int): Index of the sample to retrieve
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
+                - x: HRV signal tensor of shape (n_peaks_per_sample,)
+                - label: Binary label tensor indicating presence of diabetic peripheral neuropathy
+        """
         # return a random chunk of data from a random sleep stage
         sleep_stage = random.choice(SLEEP_STAGES)
 
@@ -74,7 +60,7 @@ class HRVDataset(Dataset):
         end_idx = start_idx + self.n_peaks_per_sample
 
         x = hrv_data[start_idx:end_idx].astype(np.float32)
-        label = features["diabetic_peripheral_neuropathy"].astype(np.float32)
+        label = features[dpn_label].astype(np.float32)
 
         # Convert to tensor here to ensure consistent shape
         x = torch.from_numpy(x)
@@ -86,12 +72,22 @@ class HRVDataset(Dataset):
 class HRVDataModule(pl.LightningDataModule):
     def __init__(
         self,
-        config: HRVDataConfig,
+        config: OmegaConf,
     ):
+        """Initialize the HRV data module.
+
+        Args:
+            config (OmegaConf): Configuration object containing data parameters
+        """
         super().__init__()
         self.config = config
 
     def setup(self, stage: Optional[str] = "fit"):
+        """Set up train, validation and test datasets.
+
+        Args:
+            stage (Optional[str]): Pipeline stage - either 'fit' or 'test'
+        """
         if stage == "fit":
             self.train_dataset = HRVDataset(self.config)
             self.val_dataset = HRVDataset(self.config)
@@ -100,28 +96,31 @@ class HRVDataModule(pl.LightningDataModule):
             self.test_dataset = HRVDataset(self.config)
 
     def train_dataloader(self):
+        """Create the training data loader."""
         return DataLoader(
             self.train_dataset,
-            batch_size=self.config.train_batch_size,
-            shuffle=self.config.train_shuffle,
-            num_workers=self.config.train_num_workers,
-            pin_memory=self.config.train_pin_memory,
+            batch_size=self.config.train.batch_size,
+            shuffle=self.config.train.shuffle,
+            num_workers=self.config.train.num_workers,
+            pin_memory=self.config.train.pin_memory,
         )
 
     def val_dataloader(self):
+        """Create the validation data loader."""
         return DataLoader(
             self.val_dataset,
-            batch_size=self.config.val_batch_size,
-            shuffle=self.config.val_shuffle,
-            num_workers=self.config.val_num_workers,
-            pin_memory=self.config.val_pin_memory,
+            batch_size=self.config.val.batch_size,
+            shuffle=self.config.val.shuffle,
+            num_workers=self.config.val.num_workers,
+            pin_memory=self.config.val.pin_memory,
         )
 
     def test_dataloader(self):
+        """Create the test data loader."""
         return DataLoader(
             self.test_dataset,
-            batch_size=self.config.val_batch_size,
-            shuffle=self.config.val_shuffle,
-            num_workers=self.config.val_num_workers,
-            pin_memory=self.config.val_pin_memory,
+            batch_size=self.config.val.batch_size,
+            shuffle=self.config.val.shuffle,
+            num_workers=self.config.val.num_workers,
+            pin_memory=self.config.val.pin_memory,
         )

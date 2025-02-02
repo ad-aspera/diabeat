@@ -3,37 +3,7 @@ import torch.nn.functional as F
 import lightning as L
 from dataclasses import dataclass
 from torch import nn
-
-
-@dataclass
-class HRV_1DCNN_Config:
-    """Configuration class for the 1D CNN model for HRV analysis.
-
-    Attributes:
-        channels: List of channel dimensions for each layer [input, conv1, conv2, conv3]
-        kernels: List of kernel sizes for each convolutional layer
-        fc_dims: List of dimensions for fully connected layers
-        input_length: Length of input sequence
-        learning_rate: Learning rate for optimizer
-        dropout_rate: Dropout probability
-    """
-
-    # Model architecture
-    # Number of channels at each layer
-    channels: list[int] = [1, 32, 64, 128]  # [input, conv1, conv2, conv3]
-
-    # Kernel sizes for each conv layer
-    kernels: list[int] = [15, 31, 61]  # [conv1, conv2, conv3]
-
-    # Fully connected layer dimensions
-    fc_dims: list[int] = [64]
-
-    # Input sequence length
-    input_length: int = 600
-
-    # Training hyperparameters
-    learning_rate: float = 1e-3
-    dropout_rate: float = 0.5
+from omegaconf import OmegaConf
 
 
 class HRV_1DCNN(L.LightningModule):
@@ -44,15 +14,15 @@ class HRV_1DCNN(L.LightningModule):
     for binary classification.
     """
 
-    def __init__(self, config: HRV_1DCNN_Config) -> None:
+    def __init__(self, config: OmegaConf) -> None:
         """Initialize the model with given configuration.
 
         Args:
-            config: Configuration object containing model hyperparameters
+            config: OmegaConf object containing model hyperparameters
         """
         super().__init__()
         self.config = config
-        self.save_hyperparameters()
+        self.save_hyperparameters(config)
 
         # Input normalization layer
         self.input_norm = nn.BatchNorm1d(self.config.channels[0])
@@ -65,18 +35,18 @@ class HRV_1DCNN(L.LightningModule):
                     in_channels=self.config.channels[i],
                     out_channels=self.config.channels[i + 1],
                     kernel_size=self.config.kernels[i],
-                    stride=1,
-                    padding="same",
+                    stride=self.config.stride,
+                    padding=self.config.padding,
                 )
             )
 
         # Pooling and activation
-        self.pool = nn.MaxPool1d(kernel_size=2)
-        self.activation = nn.ReLU()
-        self.dropout = nn.Dropout(self.config.dropout_rate)
+        self.pool = nn.MaxPool1d(kernel_size=self.config.pool_size)
+        self.activation = nn.LeakyReLU(negative_slope=self.config.leaky_relu_slope)
+        self.dropout = nn.Dropout(self.config.dropout)
 
         # Calculate the size after convolutions and pooling
-        final_length = self.config.input_length // (
+        final_length = self.config.n_peaks_per_sample // (
             2 ** (len(self.conv_layers))
         )  # Dynamic pooling calculation
         self.fc1 = nn.Linear(
@@ -137,9 +107,9 @@ class HRV_1DCNN(L.LightningModule):
         fn = torch.sum((y_pred == 0) & (y == 1)).float()
 
         # Calculate precision, recall, and F1
-        precision = tp / (tp + fp + 1e-8)  # Add small epsilon to avoid division by zero
-        recall = tp / (tp + fn + 1e-8)
-        f1 = 2 * (precision * recall) / (precision + recall + 1e-8)
+        precision = tp / (tp + fp + self.config.eps)
+        recall = tp / (tp + fn + self.config.eps)
+        f1 = 2 * (precision * recall) / (precision + recall + self.config.eps)
 
         return precision, recall, f1
 
@@ -161,10 +131,10 @@ class HRV_1DCNN(L.LightningModule):
 
         # Calculate and log metrics
         precision, recall, f1 = self.calc_metrics(y_hat, y)
-        self.log("train/loss", loss, prog_bar=True)
-        self.log("train/precision", precision, prog_bar=True)
-        self.log("train/recall", recall, prog_bar=True)
-        self.log("train/f1", f1, prog_bar=True)
+        self.log("train/loss", loss)
+        self.log("train/precision", precision)
+        self.log("train/recall", recall)
+        self.log("train/f1", f1)
 
         return loss
 
