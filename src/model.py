@@ -144,7 +144,7 @@ class HRV_1DCNN(L.LightningModule):
         Returns:
             Dictionary containing optimizer configuration
         """
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.config.optim.lr)
         return {"optimizer": optimizer}
 
     def validation_step(
@@ -171,3 +171,11 @@ class HRV_1DCNN(L.LightningModule):
         self.log("val/f1", f1)
 
         return loss
+
+    def num_params(self) -> int:
+        """Calculate the number of parameters in the model.
+
+        Returns:
+            Number of parameters
+        """
+        return sum(p.numel() for p in self.parameters())

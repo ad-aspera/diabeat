@@ -15,6 +15,12 @@ model:
   # Training hyperparameters
   dropout: 0.3    
 
+  # populated automatically by trainer. set to null
+  num_params: null
+
+  optim:
+    lr: 0.001
+
 data:
   # path to the hrv data directory
   hrv_data_dir: null  # This needs to be specified at runtime
@@ -42,7 +48,7 @@ trainer:
   accelerator: "gpu"
   devices: 1
   precision: 16
-  strategy: null
+  strategy: "auto"
   epochs: 100
   log_every_n_steps: 50
   enable_progress_bar: true
@@ -54,13 +60,13 @@ trainer:
   accumulate_grad_batches: 1
   detect_anomaly: false
   deterministic: false
-  grad_clip_val: null
-  grad_clip_algorithm: null
+  gradient_clip_val: null
+  gradient_clip_algorithm: null
   checkpoint_id: null
   
   callbacks:
     early_stopping:
-      enabled: true
+      enabled: false
       monitor: "val/loss"
       patience: 10
       min_delta: 0.0001
@@ -75,6 +81,18 @@ trainer:
       annealing_strategy: "cos"
       
     learning_rate_monitor:
-      enabled: true
+      enabled: false
       logging_interval: "step"
       log_momentum: false
+
+logger:
+  # to log to proper wandb team
+  team_name: "ad-aspera"
+  # project name
+  project_name: "diabeat"
+  # if null, wandb will generate a random run name
+  run_name: null
+  # if not full path, wandb will assume root of project as base dir
+  logs_dir: "logs"
+  # checkpoint id is required if resuming from a checkpoint
+  checkpoint_id: null
