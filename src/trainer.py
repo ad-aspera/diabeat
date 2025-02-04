@@ -195,11 +195,20 @@ def main(cfg: OmegaConf, mode: str = "train"):
 
     print("Starting Training...")
 
-    trainer.fit(
-        model=model,
-        datamodule=hrv_data_module,
-        ckpt_path=ckpt_path,
-    )
+    try:
+        trainer.fit(
+            model=model,
+            datamodule=hrv_data_module,
+            ckpt_path=ckpt_path,
+        )
+    except KeyboardInterrupt:
+        print("Keyboard Interrupt")
+        wandb_logger.experiment.log({"error": "Keyboard Interrupt"})
+        return None
+    except Exception as e:
+        print(f"Error: {e}")
+        wandb_logger.experiment.log({"error": str(e)})
+        return None
     return None
 
 
