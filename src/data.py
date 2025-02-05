@@ -6,10 +6,8 @@ import numpy as np
 from omegaconf import OmegaConf
 import torch
 from torch.utils.data import Dataset, DataLoader
-import lightning as pl
+import lightning as L
 
-
-SLEEP_STAGES = ["DS", "REM", "RS"]
 dpn_label = "diabetic_peripheral_neuropathy"
 
 
@@ -39,37 +37,37 @@ class HRVDataset(Dataset):
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
                 - x: HRV signal tensor of shape (n_peaks_per_sample,)
-                - label: Binary label tensor indicating presence of diabetic peripheral neuropathy
+                - label: Class label tensor with values 0, 1, or 2 indicating:
+                    0: No complications
+                    1: Other complications
+                    2: Diabetic peripheral neuropathy
         """
-        # return a random chunk of data from a random sleep stage
-        sleep_stage = random.choice(SLEEP_STAGES)
-
-        features = self.raw_data[idx]
-        hrv_data = features[sleep_stage][0]
+        # Get sample data
+        sample = self.raw_data[idx]
+        hrv_data = sample["data"]
 
         # Check if we have enough data points
         if len(hrv_data) < self.n_peaks_per_sample:
-            print("FOUND SHORT DATA", features)
-            # Either pad with zeros/repeat the data
+            # Pad with repeated data if too short
             hrv_data = np.pad(
                 hrv_data, (0, self.n_peaks_per_sample - len(hrv_data)), mode="wrap"
             )
 
-        # obtain a random start index of the chunk
+        # Get random chunk of data
         start_idx = random.randint(0, len(hrv_data) - self.n_peaks_per_sample)
         end_idx = start_idx + self.n_peaks_per_sample
 
         x = hrv_data[start_idx:end_idx].astype(np.float32)
-        label = features[dpn_label].astype(np.float32)
+        label = sample["class"]
 
-        # Convert to tensor here to ensure consistent shape
+        # Convert to tensors
         x = torch.from_numpy(x)
-        label = torch.tensor(label)
+        label = torch.tensor(label, dtype=torch.float)
 
         return (x, label)
 
 
-class HRVDataModule(pl.LightningDataModule):
+class HRVDataModule(L.LightningDataModule):
     def __init__(
         self,
         config: OmegaConf,

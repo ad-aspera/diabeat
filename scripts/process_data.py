@@ -1,164 +1,211 @@
 import os
+import h5py
 import pandas as pd
 import pickle
 import random
 from typing import Tuple, List, Dict, Any
+import argparse
 
 
-def load_data(hrv_path: str, features_path: str) -> Tuple[dict, pd.DataFrame]:
+def get_datasets(name: str, obj: Any) -> dict:
     """
-    Load HRV and features data from files
+    Recursively get all datasets from an HDF5 file
+    Args:
+        name: Name of the dataset/group
+        obj: HDF5 dataset/group object
+    Returns:
+        Dictionary containing dataset name and values
+    """
+    datasets = {}
+    if isinstance(obj, h5py.Dataset):
+        # Extract just the ID number from the full path
+        key = name.split("/")[0].split("_")[0]
+        datasets[key] = obj[:]
+    elif isinstance(obj, h5py.Group):
+        for key, val in obj.items():
+            # Recursively get datasets from nested groups
+            datasets.update(get_datasets(f"{name}/{key}" if name else key, val))
+    return datasets
+
+
+def load_data(h5_path: str, features_path: str) -> Tuple[dict, pd.DataFrame]:
+    """
+    Load HRV data from H5 file and features from Excel file
 
     Args:
-        hrv_path (str): Path to the HRV pickle file
+        h5_path (str): Path to the HRV H5 file
         features_path (str): Path to the features Excel file
 
     Returns:
-        tuple: (hrv_raw, features_df) containing the loaded data
+        tuple: (hrv_data, features_df) containing the loaded data
     """
-    with open(hrv_path, "rb") as f:
-        hrv_raw = pickle.load(f)
+    # Load HRV data from H5 file
+    data_dict = {}
+    with h5py.File(h5_path, "r") as f:
+        data_dict = get_datasets("", f)
 
+    # Load features from Excel file
     features_df = pd.read_excel(features_path)
 
-    return hrv_raw, features_df
+    return data_dict, features_df
 
 
-def process_data(hrv_raw: dict, features_df: pd.DataFrame) -> dict:
+def process_data(data_dict: dict, features_df: pd.DataFrame) -> List[Dict]:
     """
     Process and combine HRV and features data
 
     Args:
-        hrv_raw (dict): Raw HRV data dictionary
+        data_dict (dict): Raw HRV data dictionary
         features_df (pd.DataFrame): Features dataframe
 
     Returns:
-        dict: Processed data combining HRV and features
+        List[Dict]: List of processed data combining HRV and class labels
     """
-    data_features = []
+    processed_list = []
 
-    for patient_id, hrv_data in hrv_raw.items():
-        # Create a new id entry in data_feature
-        data_feature = {
-            "patient_id": patient_id,
-        }
+    # Iterate through data_dict
+    for id_, data in data_dict.items():
+        # Find matching row in features_df
+        feature_row = features_df[features_df["Unnamed: 0"] == int(id_)]
 
-        # Add all HRV features
-        for feature in hrv_data.keys():
-            data_feature[feature] = hrv_data[feature]
+        if not feature_row.empty:
+            # Get class label based on conditions
+            if feature_row["Diabetic Complications"].iloc[0] == 0:
+                class_label = 0
+            elif feature_row["Diabetic peripheral neuropathy"].iloc[0] == 1:
+                class_label = 2
+            else:
+                class_label = 1
 
-        # Add features from features_df
-        row = features_df.loc[features_df["Unnamed: 0"] == int(patient_id)]
+            # Store data and class in dictionary with id
+            processed_list.append({"id": id_, "data": data, "class": class_label})
 
-        # Add all columns except Unnamed: 0 as features
-        for col in features_df.columns:
-            if col != "Unnamed: 0":
-                # Clean up column name by removing parentheses and content inside them
-                clean_col = col.strip()
-                if "(" in clean_col:
-                    clean_col = clean_col[: clean_col.index("(")].strip()
-
-                # Create standardized feature name
-                feature_name = clean_col.lower().strip()
-                feature_name = feature_name.replace(" ", "_")
-                feature_name = feature_name.replace("-", "_")
-                feature_name = feature_name.replace("%", "")
-                feature_name = feature_name.replace("/", "_")
-
-                # Add feature to dictionary
-                data_feature[feature_name] = row[col].values[0]
-
-        data_features.append(data_feature)
-
-    return data_features
+    return processed_list
 
 
 def create_train_val_split(
-    samples: List[Dict[str, Any]], train_val_ratio: float = 0.8, random_seed: int = 42
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    processed_list: List[Dict], train_ratio: float = 0.8, random_seed: int = 42
+) -> Tuple[List[Dict], List[Dict]]:
     """
-    Create train and validation splits based on patient IDs while ensuring patients
-    with neuropathy are distributed across both sets.
+    Create stratified train and validation splits
 
     Args:
-        samples (List[Dict[str, Any]]): List of dictionaries containing patient data
-        train_val_ratio (float): Ratio of training data (default: 0.8)
+        processed_list (List[Dict]): Processed data list
+        train_ratio (float): Ratio of training data (default: 0.8)
         random_seed (int): Random seed for reproducibility (default: 42)
 
     Returns:
-        Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]: Tuple of (train_samples, val_samples)
+        Tuple[List[Dict], List[Dict]]: Tuple of (train_list, val_list)
     """
-    # Get patient IDs with and without neuropathy
-    patient_ids_with_neuropathy = set(
-        sample["patient_id"]
-        for sample in samples
-        if int(sample["diabetic_peripheral_neuropathy"]) == 1
-    )
-
-    patient_ids_without_neuropathy = set(
-        sample["patient_id"]
-        for sample in samples
-        if int(sample["diabetic_peripheral_neuropathy"]) == 0
-    )
-
-    # Convert to sorted lists for reproducibility
-    neuropathy_ids = sorted(list(patient_ids_with_neuropathy))
-    non_neuropathy_ids = sorted(list(patient_ids_without_neuropathy))
-
-    # Set random seed and shuffle non-neuropathy IDs
     random.seed(random_seed)
-    random.shuffle(non_neuropathy_ids)
 
-    # Split non-neuropathy IDs
-    split_idx = int(train_val_ratio * len(non_neuropathy_ids))
-    train_non_neuropathy_ids = non_neuropathy_ids[:split_idx]
-    val_non_neuropathy_ids = non_neuropathy_ids[split_idx:]
+    # Separate data by class
+    class_data = {0: [], 1: [], 2: []}
+    for item in processed_list:
+        class_data[item["class"]].append(item)
 
-    # Split neuropathy IDs (hardcoded split as in notebook)
-    train_neuropathy_ids = ["20010826", "20101822", "20123017"]
-    val_neuropathy_ids = ["19101619"]
+    # Create train and validation splits for each class
+    train_list = []
+    val_list = []
 
-    # Combine IDs for final splits
-    train_ids = train_non_neuropathy_ids + train_neuropathy_ids
-    val_ids = val_non_neuropathy_ids + val_neuropathy_ids
+    for class_label in [0, 1, 2]:
+        class_items = class_data[class_label]
+        n_samples = len(class_items)
 
-    # Create train and validation datasets
-    train_samples = [sample for sample in samples if sample["patient_id"] in train_ids]
-    val_samples = [sample for sample in samples if sample["patient_id"] in val_ids]
+        # Ensure at least 1 sample in each split
+        if n_samples == 1:
+            # If only 1 sample, duplicate it for both splits
+            train_list.append(class_items[0])
+            val_list.append(class_items[0])
+        else:
+            # Calculate split sizes
+            n_train = max(int(train_ratio * n_samples), 1)  # At least 1 for train
+            n_val = max(n_samples - n_train, 1)  # At least 1 for val
 
-    return train_samples, val_samples
+            # Randomly shuffle the items
+            random.shuffle(class_items)
+
+            # Split the data
+            train_list.extend(class_items[:n_train])
+            val_list.extend(class_items[n_train:])
+
+    return train_list, val_list
 
 
 if __name__ == "__main__":
-    # This assumes that the script is run from the root directory of the project
-    # and that the data is stored in the data/ directory
+    parser = argparse.ArgumentParser(
+        description="Process HRV data and create train/val splits"
+    )
+    parser.add_argument("--h5_path", type=str, help="Path to the HRV H5 file")
+    parser.add_argument(
+        "--features_path", type=str, help="Path to the features Excel file"
+    )
+    parser.add_argument(
+        "--output_dir", type=str, help="Directory to save the processed data"
+    )
+    parser.add_argument(
+        "--train_ratio",
+        type=float,
+        default=0.8,
+        help="Ratio of training data (default: 0.8)",
+    )
+    parser.add_argument(
+        "--random_seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducibility (default: 42)",
+    )
 
-    # Get parent directory path
-    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    args = parser.parse_args()
 
-    # Construct data paths relative to parent directory
-    hrv_path = os.path.join(parent_dir, "data", "data.pkl")
-    features_path = os.path.join(parent_dir, "data", "features.xlsx")
-    processed_data_path = os.path.join(parent_dir, "data", "processed.pkl")
+    # Use provided paths or default to relative paths
+    if args.h5_path and args.features_path and args.output_dir:
+        h5_path = args.h5_path
+        features_path = args.features_path
+        data_dir = args.output_dir
+    else:
+        # Get parent directory path
+        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        h5_path = os.path.join(parent_dir, "data", "ml_data.h5")
+        features_path = os.path.join(parent_dir, "data", "features.xlsx")
+        data_dir = os.path.join(parent_dir, "data")
+
+    # Create data directory if it doesn't exist
+    os.makedirs(data_dir, exist_ok=True)
 
     # Load data
-    hrv_raw, features_df = load_data(hrv_path, features_path)
+    data_dict, features_df = load_data(h5_path, features_path)
 
     # Process data
-    processed_data = process_data(hrv_raw, features_df)
-
-    # Save processed data to pickle file
-    with open(processed_data_path, "wb") as f:
-        pickle.dump(processed_data, f)
+    processed_list = process_data(data_dict, features_df)
 
     # Create train and validation splits
-    train_samples, val_samples = create_train_val_split(processed_data)
+    train_list, val_list = create_train_val_split(
+        processed_list, train_ratio=args.train_ratio, random_seed=args.random_seed
+    )
 
-    train_path = os.path.join(parent_dir, "data", "train.pkl")
-    val_path = os.path.join(parent_dir, "data", "val.pkl")
+    # Save train and validation splits
+    train_path = os.path.join(data_dir, "train.pkl")
+    val_path = os.path.join(data_dir, "val.pkl")
 
-    # Save train and validation splits to pickle files
     with open(train_path, "wb") as f:
-        pickle.dump(train_samples, f)
+        pickle.dump(train_list, f)
     with open(val_path, "wb") as f:
-        pickle.dump(val_samples, f)
+        pickle.dump(val_list, f)
+
+    print(f"Saved train.pkl and val.pkl to {data_dir}")
+    print("\nTraining set class distribution:")
+    train_counts = {0: 0, 1: 0, 2: 0}
+    for item in train_list:
+        train_counts[item["class"]] += 1
+    print(f"Class 0 (No complications): {train_counts[0]}")
+    print(f"Class 1 (Other complications): {train_counts[1]}")
+    print(f"Class 2 (Diabetic peripheral neuropathy): {train_counts[2]}")
+
+    print("\nValidation set class distribution:")
+    val_counts = {0: 0, 1: 0, 2: 0}
+    for item in val_list:
+        val_counts[item["class"]] += 1
+    print(f"Class 0 (No complications): {val_counts[0]}")
+    print(f"Class 1 (Other complications): {val_counts[1]}")
+    print(f"Class 2 (Diabetic peripheral neuropathy): {val_counts[2]}")

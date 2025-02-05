@@ -6,6 +6,129 @@ from torch import nn
 from omegaconf import OmegaConf
 
 
+class HRVTransformer(L.LightningModule):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.save_hyperparameters()
+
+        # Feature projection for raw HRV input
+        self.feature_linear = nn.Linear(1, self.config.feature_dim)
+        self.feature_ln = nn.LayerNorm(self.config.feature_dim)
+
+        # Learned positional embedding
+        self.pos_embedding = nn.Embedding(
+            self.config.n_peaks_per_sample, self.config.feature_dim
+        )
+
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.config.feature_dim,
+            nhead=self.config.n_heads,
+            batch_first=True,
+            dropout=self.config.dropout,
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=self.config.num_encoder_layers
+        )
+        self.transformer_ln = nn.LayerNorm(self.config.feature_dim)
+
+        # Classification head for 3 classes
+        self.classifier_head = nn.Linear(self.config.feature_dim, 3)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Ensure input shape is [batch_size, n_peaks_per_sample, 1]
+        x = x.unsqueeze(-1)
+        x = self.feature_linear(x)
+        x = self.feature_ln(x)
+
+        # Add positional embeddings
+        positions = torch.arange(x.size(1), device=x.device).unsqueeze(0)
+        x = x + self.pos_embedding(positions).expand(x.shape[0], -1, -1)
+
+        # Transformer encoder
+        x = self.transformer_encoder(x)
+        x = self.transformer_ln(x)
+
+        # Mean pooling
+        x = torch.mean(x, dim=1)
+
+        # Classification
+        x = self.classifier_head(x)
+        return x
+
+    def training_step(self, batch, batch_idx):
+        x, y = batch
+        y = y.long()  # Convert to long for CrossEntropy
+
+        y_hat = self(x)
+        loss = F.cross_entropy(y_hat, y)
+
+        # Calculate and log metrics
+        precision, recall, f1 = self.calc_metrics(y_hat, y)
+        self.log("train/loss", loss, batch_size=x.size(0), logger=True)
+        self.log("train/precision", precision, batch_size=x.size(0), logger=True)
+        self.log("train/recall", recall, batch_size=x.size(0), logger=True)
+        self.log("train/f1", f1, batch_size=x.size(0), logger=True)
+
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        x, y = batch
+        y = y.long()  # Convert to long for CrossEntropy
+
+        y_hat = self(x)
+        loss = F.cross_entropy(y_hat, y)
+
+        # Calculate and log metrics
+        precision, recall, f1 = self.calc_metrics(y_hat, y)
+        self.log("val/loss", loss)
+        self.log("val/precision", precision)
+        self.log("val/recall", recall)
+        self.log("val/f1", f1)
+
+        return loss
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(), lr=1e-3)
+
+    def calc_metrics(self, y_hat, y):
+        y_pred = torch.argmax(y_hat, dim=1)
+
+        # Calculate metrics for each class and average
+        precisions = []
+        recalls = []
+        f1s = []
+
+        for cls in range(3):
+            tp = torch.sum((y_pred == cls) & (y == cls)).float()
+            fp = torch.sum((y_pred == cls) & (y != cls)).float()
+            fn = torch.sum((y_pred != cls) & (y == cls)).float()
+
+            precision = torch.where(
+                tp + fp > 0, tp / (tp + fp), torch.tensor(0.0, device=y.device)
+            )
+            recall = torch.where(
+                tp + fn > 0, tp / (tp + fn), torch.tensor(0.0, device=y.device)
+            )
+            f1 = torch.where(
+                precision + recall > 0,
+                2 * (precision * recall) / (precision + recall),
+                torch.tensor(0.0, device=y.device),
+            )
+
+            precisions.append(precision)
+            recalls.append(recall)
+            f1s.append(f1)
+
+        # Return macro averages
+        return (
+            torch.mean(torch.stack(precisions)),
+            torch.mean(torch.stack(recalls)),
+            torch.mean(torch.stack(f1s)),
+        )
+
+
 class HRV_1DCNN(L.LightningModule):
     """1D CNN model for HRV analysis.
 

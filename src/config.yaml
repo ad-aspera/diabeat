@@ -1,15 +1,15 @@
 model:
   # input length. should be equat to data.n_peaks_per_sample
-  n_peaks_per_sample: 600
+  n_peaks_per_sample: 600  # Adjust based on HRV sequence length
   
-  # Model architecture
-  channels: [1, 32, 64, 128]  # [input, conv1, conv2, conv3]
-  kernels: [15, 31, 61]  # [conv1, conv2, conv3]
-  fc_dims: [64]  # Fully connected layer dimensions
-  pool_size: 2
-  stride: 1
-  padding: "same"
-  leaky_relu_slope: 0.01
+  feature_dim: 128  # Transformer embedding size
+  n_heads: 8  # Number of attention heads
+  num_encoder_layers: 4  # Transformer encoder layers
+  
+  # Training Hyperparameters
+  lr: 1e-3  # Learning rate
+  weight_decay: 1e-5  # Regularization
+  
   # Small constant added to denominators to prevent division by zero
   eps: 1.0e-8
   # Training hyperparameters
@@ -96,3 +96,14 @@ logger:
   logs_dir: "logs"
   # checkpoint id is required if resuming from a checkpoint
   checkpoint_id: null
+
+
+legacy_CNN_param:
+  # Model architecture
+  channels: [1, 32, 64, 128]  # [input, conv1, conv2, conv3]
+  kernels: [15, 31, 61]  # [conv1, conv2, conv3]
+  fc_dims: [64]  # Fully connected layer dimensions
+  pool_size: 2
+  stride: 1
+  padding: "same"
+  leaky_relu_slope: 0.01

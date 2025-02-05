@@ -20,7 +20,7 @@ src_path = str(Path(__file__).parent)
 if src_path not in sys.path:
     sys.path.append(src_path)
 
-from model import HRV_1DCNN
+from model import HRVTransformer
 from data import HRVDataModule
 
 
@@ -147,7 +147,7 @@ def main(cfg: OmegaConf, mode: str = "train"):
 
     # ___________ Model ___________________ #
     print("Initializing Model...")
-    model = HRV_1DCNN(cfg.model)
+    model = HRVTransformer(cfg.model)
 
     if mode == "exp_no_trainer":
         if cfg.logger.checkpoint_id:
