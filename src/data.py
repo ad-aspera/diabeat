@@ -24,9 +24,25 @@ class HRVDataset(Dataset):
 
         self.n_peaks_per_sample = config.n_peaks_per_sample
 
+        # Calculate min and max values across all data for scaling
+        all_data = np.concatenate([sample["data"] for sample in self.raw_data])
+        self.min_val = np.min(all_data)
+        self.max_val = np.max(all_data)
+
     def __len__(self) -> int:
         """Return the total number of samples in the dataset."""
         return len(self.raw_data)
+
+    def min_max_scale(self, data: np.ndarray) -> np.ndarray:
+        """Apply min-max scaling to the input data.
+
+        Args:
+            data (np.ndarray): Input data to scale
+
+        Returns:
+            np.ndarray: Scaled data between 0 and 1
+        """
+        return (data - self.min_val) / (self.max_val - self.min_val)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Get a single sample from the dataset.
@@ -58,11 +74,13 @@ class HRVDataset(Dataset):
         end_idx = start_idx + self.n_peaks_per_sample
 
         x = hrv_data[start_idx:end_idx].astype(np.float32)
+        # Apply min-max scaling
+        x = self.min_max_scale(x)
         label = sample["class"]
 
         # Convert to tensors
-        x = torch.from_numpy(x)
-        label = torch.tensor(label, dtype=torch.float)
+        x = torch.from_numpy(x).to(torch.float32)
+        label = torch.tensor(label, dtype=torch.long)
 
         return (x, label)
 

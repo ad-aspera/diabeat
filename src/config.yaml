@@ -5,7 +5,8 @@ model:
   feature_dim: 128  # Transformer embedding size
   n_heads: 8  # Number of attention heads
   num_encoder_layers: 4  # Transformer encoder layers
-  
+  dim_feedforward: 512  # Feedforward dimension
+
   # Training Hyperparameters
   lr: 1e-3  # Learning rate
   weight_decay: 1e-5  # Regularization
@@ -17,6 +18,9 @@ model:
 
   # populated automatically by trainer. set to null
   num_params: null
+
+  # pooling method
+  pooling: "mean"  # "mean" or "last"
 
   optim:
     lr: 0.001

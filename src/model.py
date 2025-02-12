@@ -18,13 +18,14 @@ class HRVTransformer(L.LightningModule):
 
         # Learned positional embedding
         self.pos_embedding = nn.Embedding(
-            self.config.n_peaks_per_sample, self.config.feature_dim
+            self.config.n_peaks_per_sample + 1, self.config.feature_dim
         )
 
         # Transformer encoder
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.config.feature_dim,
             nhead=self.config.n_heads,
+            dim_feedforward=self.config.dim_feedforward,
             batch_first=True,
             dropout=self.config.dropout,
         )
@@ -33,16 +34,29 @@ class HRVTransformer(L.LightningModule):
         )
         self.transformer_ln = nn.LayerNorm(self.config.feature_dim)
 
-        # Classification head for 3 classes
-        self.classifier_head = nn.Linear(self.config.feature_dim, 3)
+        # Initialize CLS token with smaller values
+        self.cls_token = nn.Parameter(torch.randn(1, 1, self.config.feature_dim) * 0.02)
+
+        # Add layer normalization before classification
+        self.classifier_head = nn.Sequential(
+            nn.Linear(self.config.feature_dim, self.config.feature_dim),
+            nn.GELU(),
+            nn.Dropout(self.config.dropout),
+            nn.Linear(self.config.feature_dim, 3),
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Ensure input shape is [batch_size, n_peaks_per_sample, 1]
-        x = x.unsqueeze(-1)
+        if x.dim() == 2:
+            x = x.unsqueeze(-1)
         x = self.feature_linear(x)
         x = self.feature_ln(x)
 
-        # Add positional embeddings
+        # Add CLS token to beginning of sequence
+        cls_tokens = self.cls_token.expand(x.shape[0], -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+
+        # Add positional embeddings (now including position for CLS token)
         positions = torch.arange(x.size(1), device=x.device).unsqueeze(0)
         x = x + self.pos_embedding(positions).expand(x.shape[0], -1, -1)
 
@@ -50,10 +64,8 @@ class HRVTransformer(L.LightningModule):
         x = self.transformer_encoder(x)
         x = self.transformer_ln(x)
 
-        # Mean pooling
-        x = torch.mean(x, dim=1)
-
-        # Classification
+        # Use CLS token output for classification
+        x = x[:, 0]  # Take the first token (CLS token)
         x = self.classifier_head(x)
         return x
 
@@ -90,7 +102,15 @@ class HRVTransformer(L.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=1e-3)
+        # Use lower learning rate and add warmup
+        optimizer = torch.optim.AdamW(self.parameters(), lr=1e-4, weight_decay=0.01)
+        scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=0.01, total_iters=100  # warmup steps
+        )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
+        }
 
     def calc_metrics(self, y_hat, y):
         y_pred = torch.argmax(y_hat, dim=1)
