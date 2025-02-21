@@ -184,7 +184,7 @@ def main(cfg: OmegaConf, mode: str = "train"):
 
     # Wandb object only available to rank 0
     if trainer.global_rank == 0:
-        cfg.model.num_params = model.num_params()
+        # cfg.model.num_params = model.num_params()
         # Add all config params
         wandb_logger.experiment.config.update(
             OmegaConf.to_container(cfg, resolve=True), allow_val_change=True

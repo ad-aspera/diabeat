@@ -74,7 +74,9 @@ class HRVTransformer(L.LightningModule):
         y = y.long()  # Convert to long for CrossEntropy
 
         y_hat = self(x)
-        loss = F.cross_entropy(y_hat, y)
+        # Get class weights from config
+        class_weights = torch.tensor(self.config.class_weights, device=x.device)
+        loss = F.cross_entropy(y_hat, y, weight=class_weights)
 
         # Calculate and log metrics
         precision, recall, f1 = self.calc_metrics(y_hat, y)
@@ -90,7 +92,9 @@ class HRVTransformer(L.LightningModule):
         y = y.long()  # Convert to long for CrossEntropy
 
         y_hat = self(x)
-        loss = F.cross_entropy(y_hat, y)
+        # Get class weights from config
+        class_weights = torch.tensor(self.config.class_weights, device=x.device)
+        loss = F.cross_entropy(y_hat, y, weight=class_weights)
 
         # Calculate and log metrics
         precision, recall, f1 = self.calc_metrics(y_hat, y)
