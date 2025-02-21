@@ -24,6 +24,9 @@ model:
 
   optim:
     lr: 0.001
+  
+  # class weights for only diabetes, complications, and dpn 
+  class_weights: [1.0, 2.0, 5.0]
 
 data:
   # path to the hrv data directory
