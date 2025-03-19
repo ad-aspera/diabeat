@@ -13,3 +13,6 @@ wheels/
 # Custom
 test.ipynb
 logs/
+data/
+wandb/
+outputs/
