@@ -1,25 +1,39 @@
+import random
+import numpy as np
 import torch
 import torch.nn.functional as F
-import lightning as L
-from dataclasses import dataclass
 from torch import nn
 from omegaconf import OmegaConf
+import math
+from torchmetrics.classification import (
+    MulticlassF1Score,
+    MulticlassPrecision,
+    MulticlassRecall,
+)
 
 
-class HRVTransformer(L.LightningModule):
-    def __init__(self, config):
+class HRVTransformer(nn.Module):
+    def __init__(self, config: OmegaConf) -> None:
         super().__init__()
         self.config = config
-        self.save_hyperparameters()
 
         # Feature projection for raw HRV input
         self.feature_linear = nn.Linear(1, self.config.feature_dim)
         self.feature_ln = nn.LayerNorm(self.config.feature_dim)
 
-        # Learned positional embedding
-        self.pos_embedding = nn.Embedding(
-            self.config.n_peaks_per_sample + 1, self.config.feature_dim
-        )
+        # Positional encoding setup
+        assert self.config.pos_encoding_type in ["learned", "sinusoidal"]
+        if self.config.pos_encoding_type == "learned":
+            self.pos_embedding = nn.Embedding(
+                self.config.n_peaks_per_sample + 1, self.config.feature_dim
+            )
+        else:  # sinusoidal
+            self.register_buffer(
+                "pos_embedding",
+                self._create_sinusoidal_encoding(
+                    self.config.n_peaks_per_sample + 1, self.config.feature_dim
+                ),
+            )
 
         # Transformer encoder
         encoder_layer = nn.TransformerEncoderLayer(
@@ -38,12 +52,36 @@ class HRVTransformer(L.LightningModule):
         self.cls_token = nn.Parameter(torch.randn(1, 1, self.config.feature_dim) * 0.02)
 
         # Add layer normalization before classification
+        self.n_outs = 3 if self.config.class_config == "all" else 2
+        assert len(self.config.class_weights) == self.n_outs, (
+            f"Number of class weights ({len(self.config.class_weights)}) must match "
+            f"number of outputs ({self.n_outs})"
+        )
         self.classifier_head = nn.Sequential(
             nn.Linear(self.config.feature_dim, self.config.feature_dim),
             nn.GELU(),
             nn.Dropout(self.config.dropout),
-            nn.Linear(self.config.feature_dim, 3),
+            nn.Linear(self.config.feature_dim, self.n_outs),
         )
+
+        # Initialize metrics
+        self.f1_metric = MulticlassF1Score(num_classes=self.n_outs)
+        self.precision_metric = MulticlassPrecision(num_classes=self.n_outs)
+        self.recall_metric = MulticlassRecall(num_classes=self.n_outs)
+        self.class_weights = torch.tensor(self.config.class_weights)
+
+    def _create_sinusoidal_encoding(self, seq_len: int, d_model: int) -> torch.Tensor:
+        """Create sinusoidal positional encodings."""
+        position = torch.arange(seq_len).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model)
+        )
+
+        pos_encoding = torch.zeros(seq_len, d_model)
+        pos_encoding[:, 0::2] = torch.sin(position * div_term)
+        pos_encoding[:, 1::2] = torch.cos(position * div_term)
+
+        return pos_encoding
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Ensure input shape is [batch_size, n_peaks_per_sample, 1]
@@ -56,9 +94,14 @@ class HRVTransformer(L.LightningModule):
         cls_tokens = self.cls_token.expand(x.shape[0], -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
 
-        # Add positional embeddings (now including position for CLS token)
-        positions = torch.arange(x.size(1), device=x.device).unsqueeze(0)
-        x = x + self.pos_embedding(positions).expand(x.shape[0], -1, -1)
+        # Add positional embeddings
+        if self.config.pos_encoding_type == "learned":
+            positions = torch.arange(x.size(1), device=x.device).unsqueeze(0)
+            pos_emb = self.pos_embedding(positions)
+        else:  # sinusoidal
+            pos_emb = self.pos_embedding[: x.size(1)].unsqueeze(0)
+
+        x = x + pos_emb.expand(x.shape[0], -1, -1)
 
         # Transformer encoder
         x = self.transformer_encoder(x)
@@ -69,260 +112,62 @@ class HRVTransformer(L.LightningModule):
         x = self.classifier_head(x)
         return x
 
-    def training_step(self, batch, batch_idx):
-        x, y = batch
-        y = y.long()  # Convert to long for CrossEntropy
+    def calculate_metrics(self, outputs, targets, loss=None):
+        """Calculate all metrics for the current batch/epoch."""
+        # Move metrics to correct device if needed
+        device = outputs.device
+        self.f1_metric = self.f1_metric.to(device)
+        self.precision_metric = self.precision_metric.to(device)
+        self.recall_metric = self.recall_metric.to(device)
 
-        y_hat = self(x)
-        # Get class weights from config
-        class_weights = torch.tensor(self.config.class_weights, device=x.device)
-        loss = F.cross_entropy(y_hat, y, weight=class_weights)
+        # Get predictions
+        _, predicted = torch.max(outputs.data, 1)
 
-        # Calculate and log metrics
-        precision, recall, f1 = self.calc_metrics(y_hat, y)
-        self.log("train/loss", loss, batch_size=x.size(0), logger=True)
-        self.log("train/precision", precision, batch_size=x.size(0), logger=True)
-        self.log("train/recall", recall, batch_size=x.size(0), logger=True)
-        self.log("train/f1", f1, batch_size=x.size(0), logger=True)
+        # Update and compute metrics
+        f1 = self.f1_metric(predicted, targets)
+        precision = self.precision_metric(predicted, targets)
+        recall = self.recall_metric(predicted, targets)
 
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        x, y = batch
-        y = y.long()  # Convert to long for CrossEntropy
-
-        y_hat = self(x)
-        # Get class weights from config
-        class_weights = torch.tensor(self.config.class_weights, device=x.device)
-        loss = F.cross_entropy(y_hat, y, weight=class_weights)
-
-        # Calculate and log metrics
-        precision, recall, f1 = self.calc_metrics(y_hat, y)
-        self.log("val/loss", loss)
-        self.log("val/precision", precision)
-        self.log("val/recall", recall)
-        self.log("val/f1", f1)
-
-        return loss
-
-    def configure_optimizers(self):
-        # Use lower learning rate and add warmup
-        optimizer = torch.optim.AdamW(self.parameters(), lr=1e-4, weight_decay=0.01)
-        scheduler = torch.optim.lr_scheduler.LinearLR(
-            optimizer, start_factor=0.01, total_iters=100  # warmup steps
-        )
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
+        metrics = {
+            "f1": f1,
+            "precision": precision,
+            "recall": recall,
         }
 
-    def calc_metrics(self, y_hat, y):
-        y_pred = torch.argmax(y_hat, dim=1)
+        if loss is not None:
+            metrics["loss"] = loss.item()
 
-        # Calculate metrics for each class and average
-        precisions = []
-        recalls = []
-        f1s = []
+        return metrics
 
-        for cls in range(3):
-            tp = torch.sum((y_pred == cls) & (y == cls)).float()
-            fp = torch.sum((y_pred == cls) & (y != cls)).float()
-            fn = torch.sum((y_pred != cls) & (y == cls)).float()
+    def reset_metrics(self):
+        """Reset all metrics at the end of epoch."""
+        self.f1_metric.reset()
+        self.precision_metric.reset()
+        self.recall_metric.reset()
 
-            precision = torch.where(
-                tp + fp > 0, tp / (tp + fp), torch.tensor(0.0, device=y.device)
-            )
-            recall = torch.where(
-                tp + fn > 0, tp / (tp + fn), torch.tensor(0.0, device=y.device)
-            )
-            f1 = torch.where(
-                precision + recall > 0,
-                2 * (precision * recall) / (precision + recall),
-                torch.tensor(0.0, device=y.device),
-            )
-
-            precisions.append(precision)
-            recalls.append(recall)
-            f1s.append(f1)
-
-        # Return macro averages
-        return (
-            torch.mean(torch.stack(precisions)),
-            torch.mean(torch.stack(recalls)),
-            torch.mean(torch.stack(f1s)),
-        )
+    def calculate_loss(self, outputs, targets):
+        """Calculate loss with optional class weights."""
+        class_weights = self.class_weights.to(outputs.device)
+        return F.cross_entropy(outputs, targets.long(), weight=class_weights)
 
 
-class HRV_1DCNN(L.LightningModule):
-    """1D CNN model for HRV analysis.
+def set_seed(seed: int = 42):
+    # Set random seeds for reproducibility
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
-    A PyTorch Lightning implementation of a 1D CNN for analyzing heart rate variability signals.
-    The model consists of multiple convolutional layers followed by fully connected layers
-    for binary classification.
+
+def num_params(model: nn.Module) -> int:
+    """Calculate the number of parameters in the model.
+
+    Args:
+        model (nn.Module): The model to calculate the number of parameters for.
+
+    Returns:
+        int: The number of parameters in the model.
     """
-
-    def __init__(self, config: OmegaConf) -> None:
-        """Initialize the model with given configuration.
-
-        Args:
-            config: OmegaConf object containing model hyperparameters
-        """
-        super().__init__()
-        self.config = config
-        self.save_hyperparameters(config)
-
-        # Input normalization layer
-        self.input_norm = nn.BatchNorm1d(self.config.channels[0])
-
-        # Create dynamic convolutional layers
-        self.conv_layers = nn.ModuleList()
-        for i in range(len(self.config.channels) - 1):
-            self.conv_layers.append(
-                nn.Conv1d(
-                    in_channels=self.config.channels[i],
-                    out_channels=self.config.channels[i + 1],
-                    kernel_size=self.config.kernels[i],
-                    stride=self.config.stride,
-                    padding=self.config.padding,
-                )
-            )
-
-        # Pooling and activation
-        self.pool = nn.MaxPool1d(kernel_size=self.config.pool_size)
-        self.activation = nn.LeakyReLU(negative_slope=self.config.leaky_relu_slope)
-        self.dropout = nn.Dropout(self.config.dropout)
-
-        # Calculate the size after convolutions and pooling
-        final_length = self.config.n_peaks_per_sample // (
-            2 ** (len(self.conv_layers))
-        )  # Dynamic pooling calculation
-        self.fc1 = nn.Linear(
-            self.config.channels[-1] * final_length, self.config.fc_dims[0]
-        )
-        self.fc2 = nn.Linear(self.config.fc_dims[0], 1)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass of the model.
-
-        Args:
-            x: Input tensor of shape (batch_size, sequence_length) or (batch_size, 1, sequence_length)
-
-        Returns:
-            Tensor of shape (batch_size,) containing logits
-        """
-        # Ensure input is in the right shape
-        if x.dim() == 2:
-            x = x.unsqueeze(1)
-
-        # Apply normalization
-        x = self.input_norm(x)
-
-        # Dynamic convolutional blocks
-        for conv in self.conv_layers:
-            x = self.activation(conv(x))
-            x = self.pool(x)
-            x = self.dropout(x)
-
-        # Flatten for fully connected layers
-        x = x.view(x.size(0), -1)
-
-        # Fully connected layers
-        x = self.activation(self.fc1(x))
-        x = self.dropout(x)
-        x = self.fc2(x)
-
-        return x
-
-    def calc_metrics(
-        self, y_hat: torch.Tensor, y: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Calculate precision, recall, and F1 score.
-
-        Args:
-            y_hat: Predicted logits
-            y: Ground truth labels
-
-        Returns:
-            Tuple of (precision, recall, F1) scores
-        """
-        # Apply sigmoid first, then threshold at 0.5
-        y_pred = (torch.sigmoid(y_hat) >= 0.5).float()
-
-        # Calculate true positives, false positives, false negatives
-        tp = torch.sum((y_pred == 1) & (y == 1)).float()
-        fp = torch.sum((y_pred == 1) & (y == 0)).float()
-        fn = torch.sum((y_pred == 0) & (y == 1)).float()
-
-        # Calculate precision, recall, and F1
-        precision = tp / (tp + fp + self.config.eps)
-        recall = tp / (tp + fn + self.config.eps)
-        f1 = 2 * (precision * recall) / (precision + recall + self.config.eps)
-
-        return precision, recall, f1
-
-    def training_step(
-        self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int
-    ) -> torch.Tensor:
-        """Training step.
-
-        Args:
-            batch: Tuple of (inputs, labels)
-            batch_idx: Index of current batch
-
-        Returns:
-            Loss tensor
-        """
-        x, y = batch
-        y_hat = self(x).view(-1)
-        loss = F.binary_cross_entropy_with_logits(y_hat, y)
-
-        # Calculate and log metrics
-        precision, recall, f1 = self.calc_metrics(y_hat, y)
-        self.log("train/loss", loss)
-        self.log("train/precision", precision)
-        self.log("train/recall", recall)
-        self.log("train/f1", f1)
-
-        return loss
-
-    def configure_optimizers(self) -> dict:
-        """Configure optimizer.
-
-        Returns:
-            Dictionary containing optimizer configuration
-        """
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.config.optim.lr)
-        return {"optimizer": optimizer}
-
-    def validation_step(
-        self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int
-    ) -> torch.Tensor:
-        """Validation step.
-
-        Args:
-            batch: Tuple of (inputs, labels)
-            batch_idx: Index of current batch
-
-        Returns:
-            Loss tensor
-        """
-        x, y = batch
-        y_hat = self(x).view(-1)
-        loss = F.binary_cross_entropy_with_logits(y_hat, y)
-
-        # Calculate and log metrics
-        precision, recall, f1 = self.calc_metrics(y_hat, y)
-        self.log("val/loss", loss)
-        self.log("val/precision", precision)
-        self.log("val/recall", recall)
-        self.log("val/f1", f1)
-
-        return loss
-
-    def num_params(self) -> int:
-        """Calculate the number of parameters in the model.
-
-        Returns:
-            Number of parameters
-        """
-        return sum(p.numel() for p in self.parameters())
+    return sum(p.numel() for p in model.parameters())

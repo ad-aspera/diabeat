@@ -1,7 +1,11 @@
+shared:
+  n_peaks_per_sample: 600  # 600 peaks ~= 10 minutes of recording
+  class_config: "all" # "all", "diab_v_comp", "comp_v_dpn"
+
 model:
-  # input length. should be equat to data.n_peaks_per_sample
-  n_peaks_per_sample: 600  # Adjust based on HRV sequence length
-  
+  n_peaks_per_sample: null # updated at runtime from shared config
+  class_config: null # updated at runtime from shared config
+  pos_encoding_type: "learned"  # "learned" or "sinusoidal"
   feature_dim: 128  # Transformer embedding size
   n_heads: 8  # Number of attention heads
   num_encoder_layers: 4  # Transformer encoder layers
@@ -30,79 +34,47 @@ model:
 
 data:
   # path to the hrv data directory
-  hrv_data_dir: null  # This needs to be specified at runtime
-  # number of peaks per sample
-  n_peaks_per_sample: 600  # 600 peaks ~= 10 minutes of recording
-
-  # split
-  split: "train"
+  hrv_data_dir: ""  # This needs to be specified at runtime
+  n_peaks_per_sample: null # updated at runtime from shared config
+  class_config: null # updated at runtime from shared config
   
+  # split
+  slice_strategy: "sliding"  # "sliding" or "chunked"
+  data_config: nabian
+
+  min_hrv_threshold: 400
+  max_hrv_threshold: 1300
   # data loader config params
   train:
     batch_size: 8
     num_workers: 4
     shuffle: true
     pin_memory: true
+    drop_last: true
 
   val:
     batch_size: 8
     num_workers: 4
     shuffle: false
     pin_memory: true
-
+    drop_last: true
 
 trainer:
-  accelerator: "gpu"
-  devices: 1
-  precision: 16
-  strategy: "auto"
   epochs: 100
+  n_batches_train: null  # if not null, will only train on these many batches
+  n_batches_val: null    # if not null, will only validate on these many batches
+  device: "cuda"
   log_every_n_steps: 50
-  enable_progress_bar: true
-  val_check_interval: 1.0
-  check_val_every_n_epoch: 1
-  limit_train_batches: 1.0
-  limit_val_batches: 1.0
-  overfit_batches: 0.0
-  accumulate_grad_batches: 1
-  detect_anomaly: false
-  deterministic: false
-  gradient_clip_val: null
-  gradient_clip_algorithm: null
-  checkpoint_id: null
-  
-  callbacks:
-    early_stopping:
-      enabled: false
-      monitor: "val/loss"
-      patience: 10
-      min_delta: 0.0001
-      mode: "min"
-      verbose: true
-
-    stochastic_weight_averaging:
-      enabled: false
-      lrs: 0.001
-      swa_epoch_start: 0.8
-      annealing_epochs: 5
-      annealing_strategy: "cos"
-      
-    learning_rate_monitor:
-      enabled: false
-      logging_interval: "step"
-      log_momentum: false
-
-logger:
-  # to log to proper wandb team
-  team_name: "ad-aspera"
-  # project name
-  project_name: "diabeat"
-  # if null, wandb will generate a random run name
-  run_name: null
-  # if not full path, wandb will assume root of project as base dir
+  use_validation: true
+  run_validation_every_n_steps: 500  # is used if use_validation is true
+  use_lr_scheduler: false
   logs_dir: "logs"
-  # checkpoint id is required if resuming from a checkpoint
-  checkpoint_id: null
+
+wandb:
+  entity: "ad-aspera"
+  project: "diabeat"
+  name: null
+  logs_dir: "logs"
 
 
 legacy_CNN_param:
