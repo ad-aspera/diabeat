@@ -371,12 +371,19 @@ def main(cfg: OmegaConf) -> None:
     train_loader, val_loader = load_dataloaders(cfg.data, fold=cfg.trainer.fold)
 
     # Get fixed batches for training and validation
-    train_batches = get_fixed_batches(
-        train_loader, cfg.trainer.n_batches_train, cfg.data.train.shuffle
-    )
-    val_batches = get_fixed_batches(
-        val_loader, cfg.trainer.n_batches_val, cfg.data.val.shuffle
-    )
+    if cfg.trainer.n_batches_train:
+        train_batches = get_fixed_batches(
+            train_loader, cfg.trainer.n_batches_train, cfg.data.train.shuffle
+        )
+    else:
+        train_batches = train_loader
+
+    if cfg.trainer.n_batches_val:
+        val_batches = get_fixed_batches(
+            val_loader, cfg.trainer.n_batches_val, cfg.data.val.shuffle
+        )
+    else:
+        val_batches = val_loader
 
     # Print total batches
     print(f"Fixed training batches: {len(train_batches)}")
