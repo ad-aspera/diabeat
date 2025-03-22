@@ -364,7 +364,7 @@ def main(cfg: OmegaConf) -> None:
     )
 
     # Initialize data loaders
-    train_loader, val_loader = load_dataloaders(cfg.data, fold=0)
+    train_loader, val_loader = load_dataloaders(cfg.data, fold=cfg.trainer.fold)
 
     # Get fixed batches for training and validation
     train_batches = get_fixed_batches(train_loader, cfg.trainer.n_batches_train)

@@ -59,6 +59,7 @@ trainer:
   use_validation: true
   run_validation_every_n_steps: 500  # is used if use_validation is true
   logs_dir: "logs"
+  fold: 0
   
   # Optimization hyperparameters
   optim:
