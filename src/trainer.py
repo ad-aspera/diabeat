@@ -1,8 +1,8 @@
 import os
+import random
 import hydra
 import torch
 import wandb
-import numpy as np
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 from typing import Dict, List, Optional, Tuple
@@ -193,7 +193,9 @@ def run_validation(
     return val_metrics, best_val_loss
 
 
-def get_fixed_batches(loader: DataLoader, n_batches: Optional[int] = None) -> List:
+def get_fixed_batches(
+    loader: DataLoader, n_batches: Optional[int] = None, shuffle: bool = False
+) -> List:
     """Get a fixed set of batches from a DataLoader for consistent training.
 
     This function extracts a specified number of batches from a DataLoader,
@@ -202,7 +204,7 @@ def get_fixed_batches(loader: DataLoader, n_batches: Optional[int] = None) -> Li
     Args:
         loader (DataLoader): The data loader to extract batches from
         n_batches (Optional[int], optional): Number of batches to extract, or None for all. Defaults to None.
-
+        shuffle (bool, optional): Whether to shuffle the batches. Defaults to False.
     Returns:
         List: List of batches, where each batch is a tuple of (inputs, targets, [optional metadata])
     """
@@ -210,7 +212,9 @@ def get_fixed_batches(loader: DataLoader, n_batches: Optional[int] = None) -> Li
     for i, batch in enumerate(loader):
         if n_batches and i >= n_batches:
             break
-        batches.append(batch)
+        batched.append(batch)
+    if shuffle:
+        random.shuffle(batches)
     return batches
 
 
@@ -367,8 +371,12 @@ def main(cfg: OmegaConf) -> None:
     train_loader, val_loader = load_dataloaders(cfg.data, fold=cfg.trainer.fold)
 
     # Get fixed batches for training and validation
-    train_batches = get_fixed_batches(train_loader, cfg.trainer.n_batches_train)
-    val_batches = get_fixed_batches(val_loader, cfg.trainer.n_batches_val)
+    train_batches = get_fixed_batches(
+        train_loader, cfg.trainer.n_batches_train, cfg.data.train.shuffle
+    )
+    val_batches = get_fixed_batches(
+        val_loader, cfg.trainer.n_batches_val, cfg.data.val.shuffle
+    )
 
     # Print total batches
     print(f"Fixed training batches: {len(train_batches)}")
