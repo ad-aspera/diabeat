@@ -32,6 +32,7 @@ data:
   # split
   slice_strategy: "sliding"  # "sliding" or "chunked"
   data_config: nabian
+  class_based_stride: [1, 1]
 
   min_hrv_threshold: 400
   max_hrv_threshold: 1300
@@ -42,7 +43,6 @@ data:
     shuffle: true
     pin_memory: true
     drop_last: true
-
   val:
     batch_size: 8
     num_workers: 4

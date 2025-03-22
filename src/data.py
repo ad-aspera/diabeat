@@ -55,6 +55,7 @@ class HRVDataset(Dataset):
 
         self.slice_strategy = config.slice_strategy
         self.class_config = config.class_config
+        self.class_based_stride = config.class_based_stride
 
         self.clean_data()
         self.merge_classes()
@@ -178,7 +179,7 @@ class HRVDataset(Dataset):
         """Generate chunks of data based on the specified slice strategy.
 
         Supports two strategies:
-        - 'sliding': Creates overlapping chunks with stride=1
+        - 'sliding': Creates overlapping chunks with configurable stride
         - 'chunked': Creates non-overlapping chunks
 
         Also handles padding for samples shorter than n_peaks_per_sample.
@@ -204,8 +205,13 @@ class HRVDataset(Dataset):
                 )
 
             if self.slice_strategy == "sliding":
-                # Sliding window with stride=1
-                for start_idx in range(len(hrv_data) - self.n_peaks_per_sample + 1):
+                # Get stride based on class label
+                stride = self.class_based_stride[label]
+
+                # Sliding window with class-specific stride
+                for start_idx in range(
+                    0, len(hrv_data) - self.n_peaks_per_sample + 1, stride
+                ):
                     chunk = hrv_data[start_idx : start_idx + self.n_peaks_per_sample]
                     chunks.append(
                         {"data": chunk, "label": label, "patient_id": patient_id}
