@@ -10,14 +10,28 @@ class HRV_1DCNN(L.LightningModule):
 
     A PyTorch Lightning implementation of a 1D CNN for analyzing heart rate variability signals.
     The model consists of multiple convolutional layers followed by fully connected layers
-    for binary classification.
+    for binary classification of heart rate variability data.
+
+    Attributes:
+        config (OmegaConf): Configuration object containing model hyperparameters
+        input_norm (nn.BatchNorm1d): Batch normalization for input
+        conv_layers (nn.ModuleList): List of convolutional layers
+        pool (nn.MaxPool1d): Pooling layer
+        activation (nn.LeakyReLU): Activation function
+        dropout (nn.Dropout): Dropout layer for regularization
+        fc1 (nn.Linear): First fully connected layer
+        fc2 (nn.Linear): Output layer for binary classification
     """
 
     def __init__(self, config: OmegaConf) -> None:
         """Initialize the model with given configuration.
 
+        Constructs the 1D CNN architecture with layers as specified in the config,
+        including convolutional layers, pooling, activation, and fully connected layers.
+
         Args:
-            config: OmegaConf object containing model hyperparameters
+            config (OmegaConf): Configuration object containing model hyperparameters
+                including channels, kernel sizes, stride, padding, dropout rate, etc.
         """
         super().__init__()
         self.config = config
@@ -56,11 +70,17 @@ class HRV_1DCNN(L.LightningModule):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the model.
 
+        Processes the input HRV signal through convolutional layers, pooling,
+        activation functions, and fully connected layers to produce binary
+        classification logits.
+
         Args:
-            x: Input tensor of shape (batch_size, sequence_length) or (batch_size, 1, sequence_length)
+            x (torch.Tensor): Input tensor of shape (batch_size, sequence_length)
+                or (batch_size, 1, sequence_length) containing HRV signal data
 
         Returns:
-            Tensor of shape (batch_size,) containing logits
+            torch.Tensor: Output tensor of shape (batch_size,) containing binary
+                classification logits (pre-sigmoid values)
         """
         # Ensure input is in the right shape
         if x.dim() == 2:
@@ -88,14 +108,20 @@ class HRV_1DCNN(L.LightningModule):
     def calc_metrics(
         self, y_hat: torch.Tensor, y: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Calculate precision, recall, and F1 score.
+        """Calculate precision, recall, and F1 score for binary classification.
+
+        Computes classification metrics based on predicted logits and ground truth labels.
+        Applies sigmoid activation and 0.5 threshold to convert logits to binary predictions.
 
         Args:
-            y_hat: Predicted logits
-            y: Ground truth labels
+            y_hat (torch.Tensor): Predicted logits from the model
+            y (torch.Tensor): Ground truth binary labels (0 or 1)
 
         Returns:
-            Tuple of (precision, recall, F1) scores
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor]: A tuple containing:
+                - precision: Precision score (TP / (TP + FP))
+                - recall: Recall score (TP / (TP + FN))
+                - F1: F1 score (2 * precision * recall / (precision + recall))
         """
         # Apply sigmoid first, then threshold at 0.5
         y_pred = (torch.sigmoid(y_hat) >= 0.5).float()
@@ -115,14 +141,19 @@ class HRV_1DCNN(L.LightningModule):
     def training_step(
         self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
-        """Training step.
+        """Execute a single training step.
+
+        Performs forward pass, loss calculation, metric computation, and logging
+        for a batch of training data.
 
         Args:
-            batch: Tuple of (inputs, labels)
-            batch_idx: Index of current batch
+            batch (tuple[torch.Tensor, torch.Tensor]): Tuple containing:
+                - x: Input HRV signals of shape (batch_size, sequence_length)
+                - y: Binary target labels of shape (batch_size,)
+            batch_idx (int): Index of the current batch
 
         Returns:
-            Loss tensor
+            torch.Tensor: Computed loss value for backpropagation
         """
         x, y = batch
         y_hat = self(x).view(-1)
@@ -138,10 +169,12 @@ class HRV_1DCNN(L.LightningModule):
         return loss
 
     def configure_optimizers(self) -> dict:
-        """Configure optimizer.
+        """Configure the optimizer for training.
+
+        Sets up the Adam optimizer with learning rate from configuration.
 
         Returns:
-            Dictionary containing optimizer configuration
+            dict: Dictionary containing the configured optimizer
         """
         optimizer = torch.optim.Adam(self.parameters(), lr=self.config.optim.lr)
         return {"optimizer": optimizer}
@@ -149,14 +182,19 @@ class HRV_1DCNN(L.LightningModule):
     def validation_step(
         self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
-        """Validation step.
+        """Execute a single validation step.
+
+        Performs forward pass, loss calculation, metric computation, and logging
+        for a batch of validation data.
 
         Args:
-            batch: Tuple of (inputs, labels)
-            batch_idx: Index of current batch
+            batch (tuple[torch.Tensor, torch.Tensor]): Tuple containing:
+                - x: Input HRV signals of shape (batch_size, sequence_length)
+                - y: Binary target labels of shape (batch_size,)
+            batch_idx (int): Index of the current batch
 
         Returns:
-            Loss tensor
+            torch.Tensor: Computed validation loss value
         """
         x, y = batch
         y_hat = self(x).view(-1)
@@ -172,9 +210,9 @@ class HRV_1DCNN(L.LightningModule):
         return loss
 
     def num_params(self) -> int:
-        """Calculate the number of parameters in the model.
+        """Calculate the total number of trainable parameters in the model.
 
         Returns:
-            Number of parameters
+            int: Number of parameters in the model
         """
         return sum(p.numel() for p in self.parameters())
