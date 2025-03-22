@@ -2,6 +2,7 @@ import os
 import hydra
 import torch
 import wandb
+import numpy as np
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 from typing import Dict, List, Optional, Tuple
@@ -14,19 +15,22 @@ BASE_PATH = os.path.dirname(SRC_PATH)
 
 
 def config_preprocessing(cfg: OmegaConf) -> OmegaConf:
-    """Check and set default values for config paths.
+    """Preprocess configuration by setting default paths and sharing common parameters.
+
+    This function ensures configuration paths are properly set and copies shared
+    parameters into both data and model configurations.
 
     Args:
-        cfg: Configuration object containing data and wandb settings
+        cfg (OmegaConf): Configuration object containing data and model settings
 
     Returns:
-        Updated configuration object
+        OmegaConf: Updated configuration object with default paths and shared parameters
     """
-    if cfg.data.hrv_data_dir == "":
-        print("Warning: hrv_data_dir is not set, using default hrv_data_dir")
+    if not os.path.exists(cfg.data.hrv_data_dir):
+        print("Warning: hrv_data_dir does not exist, using default hrv_data_dir")
         cfg.data.hrv_data_dir = os.path.join(BASE_PATH, "data")
-    if cfg.wandb.logs_dir == "":
-        print("Warning: wandb.logs_dir is not set, using default logs directory")
+    if not os.path.exists(cfg.wandb.logs_dir):
+        print("Warning: wandb.logs_dir does not exist, using default logs directory")
         cfg.wandb.logs_dir = os.path.join(BASE_PATH, "logs")
 
     # Merge shared config into data and model configs
@@ -39,14 +43,17 @@ def config_preprocessing(cfg: OmegaConf) -> OmegaConf:
 
 
 def get_total_batches(train_loader: DataLoader, cfg: OmegaConf) -> int:
-    """Calculate total number of batches per epoch.
+    """Calculate the total number of batches per epoch for the training dataset.
+
+    This function determines the total number of batches either from configuration
+    or by calculating based on dataset size and batch size.
 
     Args:
-        train_loader: DataLoader for training data
-        cfg: Configuration object containing training settings
+        train_loader (DataLoader): DataLoader containing the training dataset
+        cfg (OmegaConf): Configuration object containing training settings
 
     Returns:
-        Total number of batches
+        int: Total number of batches per epoch
     """
     if cfg.trainer.n_batches_train:
         total_batches = cfg.trainer.n_batches_train
@@ -57,48 +64,56 @@ def get_total_batches(train_loader: DataLoader, cfg: OmegaConf) -> int:
     return total_batches
 
 
-def get_checkpoint_dir(cfg: OmegaConf, run_name: str) -> str:
-    """Get directory path for saving model checkpoints.
+def save_checkpoint(
+    model: torch.nn.Module,
+    cfg: OmegaConf,
+    filename: str,
+    val_loss: Optional[float] = None,
+    save_config: bool = False,
+    log_message: Optional[str] = None,
+) -> None:
+    """Save model checkpoint and optionally configuration to disk.
+
+    This function handles saving model checkpoints to a specified directory structure,
+    optionally saving configuration files, and logging to wandb.
 
     Args:
-        cfg: Configuration object
-        run_name: Name of the current wandb run
-
-    Returns:
-        Path to checkpoint directory
-    """
-    return os.path.join(cfg.trainer.logs_dir, "saved_models", run_name)
-
-
-def save_checkpoint(model: torch.nn.Module, cfg: OmegaConf, val_loss: float) -> None:
-    """Save model checkpoint in organized directory structure.
-
-    Args:
-        model: Model to save
-        cfg: Configuration object
-        val_loss: Validation loss for logging
+        model (torch.nn.Module): The model to save
+        cfg (OmegaConf): Configuration object containing paths and settings
+        filename (str): Name of the checkpoint file to save
+        val_loss (Optional[float], optional): Validation loss for logging. Defaults to None.
+        save_config (bool, optional): Whether to save config alongside model. Defaults to False.
+        log_message (Optional[str], optional): Custom message to log after saving. Defaults to None.
     """
     # Get run name from wandb
     run_name = wandb.run.name if wandb.run.name else "unnamed_run"
 
     # Create checkpoint directory
-    checkpoint_dir = get_checkpoint_dir(cfg, run_name)
+    checkpoint_dir = os.path.join(cfg.trainer.logs_dir, "saved_models", run_name)
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # Save model
-    checkpoint_path = os.path.join(checkpoint_dir, "best_model.pth")
+    checkpoint_path = os.path.join(checkpoint_dir, filename)
     torch.save(model.state_dict(), checkpoint_path)
 
-    # Save config
-    config_path = os.path.join(checkpoint_dir, "config.yaml")
-    with open(config_path, "w") as f:
-        OmegaConf.save(cfg, f)
+    # Save config if requested
+    if save_config:
+        config_path = os.path.join(checkpoint_dir, "config.yaml")
+        with open(config_path, "w") as f:
+            OmegaConf.save(cfg, f)
+        wandb.save(config_path)
 
     # Log to wandb
     wandb.save(checkpoint_path)
-    wandb.save(config_path)
 
-    print(f"Saved new best model with validation loss: {val_loss:.4f}")
+    # Log message
+    if log_message:
+        print(log_message)
+    elif val_loss is not None:
+        print(f"Saved new best model with validation loss: {val_loss:.4f}")
+    else:
+        print(f"Saved model checkpoint: {filename}")
+
     print(f"Checkpoint saved to: {checkpoint_dir}")
 
 
@@ -108,22 +123,32 @@ def run_validation(
     device: torch.device,
     cfg: OmegaConf,
     best_val_loss: float,
+    global_step: int,
 ) -> Tuple[Dict[str, float], float]:
-    """Run validation if needed and return metrics and updated best loss.
+    """Run validation on the provided model and dataset.
+
+    This function performs validation by running the model on validation data,
+    collecting metrics, calculating confusion matrix values, and saving the best model
+    if validation loss improves.
 
     Args:
-        model: Model to validate
-        val_loader: DataLoader or List of fixed validation batches
-        device: Device to run validation on
-        cfg: Configuration object
-        best_val_loss: Best validation loss so far
+        model (torch.nn.Module): Model to validate
+        val_loader (DataLoader): DataLoader containing validation data
+        device (torch.device): Device to run validation on
+        cfg (OmegaConf): Configuration object
+        best_val_loss (float): Best validation loss achieved so far
+        global_step (int): Current global training step
 
     Returns:
-        Tuple of (validation metrics dict, updated best validation loss)
+        Tuple[Dict[str, float], float]: A tuple containing:
+            - Dictionary of validation metrics (loss, f1, f2, precision, recall)
+            - Updated best validation loss
     """
-
     model.eval()
     total_loss = 0
+    all_batch_metrics = []
+    all_outputs = []
+    all_targets = []
     steps = 0
 
     with torch.no_grad():
@@ -134,39 +159,52 @@ def run_validation(
             outputs = model(x)
             loss = model.calculate_loss(outputs, y)
 
+            # Store outputs and targets for confusion matrix
+            all_outputs.append(outputs)
+            all_targets.append(y)
+
             # Calculate metrics
-            batch_metrics = model.calculate_metrics(outputs, y, loss)
+            batch_metrics = model.calculate_metrics(outputs, y)
+            batch_metrics["loss"] = loss.item()  # Add loss to metrics
+            all_batch_metrics.append(batch_metrics)
             total_loss += batch_metrics["loss"]
             steps += 1
 
-    # Get final validation metrics
-    val_metrics = {
-        "loss": total_loss / steps,
-        "f1": model.f1_metric.compute(),
-        "precision": model.precision_metric.compute(),
-        "recall": model.recall_metric.compute(),
-    }
+    # Concatenate all batches for confusion matrix
+    all_outputs = torch.cat(all_outputs, dim=0)
+    all_targets = torch.cat(all_targets, dim=0)
 
-    # Reset metrics
-    model.reset_metrics()
+    # Average metrics from all batches
+    val_metrics = {}
+    for key in all_batch_metrics[0].keys():
+        val_metrics[key] = sum(batch[key] for batch in all_batch_metrics) / steps
 
     # Save best model based on validation loss
     if val_metrics["loss"] < best_val_loss:
         best_val_loss = val_metrics["loss"]
-        save_checkpoint(model, cfg, best_val_loss)
+        save_checkpoint(
+            model=model,
+            cfg=cfg,
+            filename="best_model.pth",
+            val_loss=best_val_loss,
+            save_config=True,
+        )
 
     return val_metrics, best_val_loss
 
 
 def get_fixed_batches(loader: DataLoader, n_batches: Optional[int] = None) -> List:
-    """Get fixed batches from loader to use across epochs.
+    """Get a fixed set of batches from a DataLoader for consistent training.
+
+    This function extracts a specified number of batches from a DataLoader,
+    which can be used to ensure consistent data across epochs.
 
     Args:
-        loader: Data loader to get batches from
-        n_batches: Number of batches to get, if None get all
+        loader (DataLoader): The data loader to extract batches from
+        n_batches (Optional[int], optional): Number of batches to extract, or None for all. Defaults to None.
 
     Returns:
-        List of batches
+        List: List of batches, where each batch is a tuple of (inputs, targets, [optional metadata])
     """
     batches = []
     for i, batch in enumerate(loader):
@@ -188,7 +226,28 @@ def train_epoch(
     global_step: int,
     best_val_loss: float,
 ) -> Tuple[int, float]:
-    """Train model for one epoch using fixed batches."""
+    """Train the model for one complete epoch.
+
+    This function trains the model for one epoch using the provided batches,
+    periodically logs metrics, runs validation, and saves checkpoints.
+
+    Args:
+        model (torch.nn.Module): The model to train
+        train_batches (List): List of training data batches
+        val_batches (List): List of validation data batches
+        optimizer (torch.optim.Optimizer): Optimizer for updating model parameters
+        scheduler (Optional[torch.optim.lr_scheduler._LRScheduler]): Optional learning rate scheduler
+        device (torch.device): Device to run training on
+        epoch (int): Current epoch number
+        cfg (OmegaConf): Configuration object
+        global_step (int): Current global step count
+        best_val_loss (float): Best validation loss achieved so far
+
+    Returns:
+        Tuple[int, float]: A tuple containing:
+            - Updated global step count
+            - Updated best validation loss
+    """
     steps = 0
 
     print(f"Training epoch {epoch+1}")
@@ -205,8 +264,9 @@ def train_epoch(
         if scheduler is not None:
             scheduler.step()
 
-        # Calculate metrics
-        batch_metrics = model.calculate_metrics(outputs, y, loss)
+        # Calculate metrics for step-level logging only
+        batch_metrics = model.calculate_metrics(outputs, y)
+        batch_metrics["loss"] = loss.item()  # Add loss to metrics
 
         steps += 1
         global_step += 1
@@ -218,10 +278,13 @@ def train_epoch(
                     "train/step": global_step,
                     "train/step_loss": batch_metrics["loss"],
                     "train/step_f1": batch_metrics["f1"],
+                    "train/step_f2": batch_metrics["f2"],
                     "train/step_precision": batch_metrics["precision"],
                     "train/step_recall": batch_metrics["recall"],
                     "train/learning_rate": (
-                        scheduler.get_last_lr()[0] if scheduler else cfg.model.optim.lr
+                        scheduler.get_last_lr()[0]
+                        if scheduler
+                        else cfg.trainer.optim.lr
                     ),
                     "epoch": epoch,
                 },
@@ -241,6 +304,7 @@ def train_epoch(
                 device=device,
                 cfg=cfg,
                 best_val_loss=best_val_loss,
+                global_step=global_step,
             )
 
             # Log validation metrics
@@ -248,6 +312,7 @@ def train_epoch(
                 {
                     "val/step_loss": val_metrics["loss"],
                     "val/step_f1": val_metrics["f1"],
+                    "val/step_f2": val_metrics["f2"],
                     "val/step_precision": val_metrics["precision"],
                     "val/step_recall": val_metrics["recall"],
                 },
@@ -256,18 +321,28 @@ def train_epoch(
 
             model.train()
 
-    # Reset metrics for next epoch
-    model.reset_metrics()
+    # Save model checkpoint after each epoch
+    save_checkpoint(
+        model=model,
+        cfg=cfg,
+        filename=f"model_epoch_{epoch+1}.pth",
+        log_message=f"Saved model checkpoint for epoch {epoch+1}",
+    )
+
+    print(f"\nCompleted epoch {epoch+1}")
 
     return global_step, best_val_loss
 
 
 @hydra.main(config_path=SRC_PATH, config_name="config", version_base=None)
 def main(cfg: OmegaConf) -> None:
-    """Main training function.
+    """Main training function that orchestrates the entire training process.
+
+    This hydra-based main function handles initialization, training loop,
+    evaluation, and cleanup for the model training process.
 
     Args:
-        cfg: Hydra configuration object
+        cfg (OmegaConf): Hydra configuration object containing all settings
     """
     set_seed()
 
@@ -303,12 +378,12 @@ def main(cfg: OmegaConf) -> None:
     # Initialize optimizer and scheduler
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=cfg.model.optim.lr,
-        weight_decay=cfg.model.weight_decay,
+        lr=cfg.trainer.optim.lr,
+        weight_decay=cfg.trainer.optim.weight_decay,
     )
 
     scheduler = None
-    if cfg.trainer.use_lr_scheduler:
+    if cfg.trainer.optim.use_lr_scheduler:
         scheduler = torch.optim.lr_scheduler.LinearLR(
             optimizer, start_factor=0.01, total_iters=100  # warmup steps
         )

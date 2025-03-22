@@ -10,27 +10,18 @@ model:
   n_heads: 8  # Number of attention heads
   num_encoder_layers: 4  # Transformer encoder layers
   dim_feedforward: 512  # Feedforward dimension
-
-  # Training Hyperparameters
-  lr: 1e-3  # Learning rate
-  weight_decay: 1e-5  # Regularization
   
   # Small constant added to denominators to prevent division by zero
   eps: 1.0e-8
-  # Training hyperparameters
+  # Model hyperparameters
   dropout: 0.3    
 
   # populated automatically by trainer. set to null
   num_params: null
-
-  # pooling method
-  pooling: "mean"  # "mean" or "last"
-
-  optim:
-    lr: 0.001
   
   # class weights for only diabetes, complications, and dpn 
-  class_weights: [1.0, 2.0, 5.0]
+  use_class_weights: false
+  class_weights: 10
 
 data:
   # path to the hrv data directory
@@ -67,22 +58,16 @@ trainer:
   log_every_n_steps: 50
   use_validation: true
   run_validation_every_n_steps: 500  # is used if use_validation is true
-  use_lr_scheduler: false
   logs_dir: "logs"
+  
+  # Optimization hyperparameters
+  optim:
+    lr: 1e-3  # Learning rate
+    weight_decay: 1e-5  # Regularization
+    use_lr_scheduler: false  # Whether to use learning rate scheduler
 
 wandb:
   entity: "ad-aspera"
   project: "diabeat"
   name: null
   logs_dir: "logs"
-
-
-legacy_CNN_param:
-  # Model architecture
-  channels: [1, 32, 64, 128]  # [input, conv1, conv2, conv3]
-  kernels: [15, 31, 61]  # [conv1, conv2, conv3]
-  fc_dims: [64]  # Fully connected layer dimensions
-  pool_size: 2
-  stride: 1
-  padding: "same"
-  leaky_relu_slope: 0.01

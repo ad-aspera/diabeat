@@ -10,10 +10,32 @@ from torch.utils.data import Dataset, DataLoader
 
 
 class HRVDataset(Dataset):
-    def __init__(self, config: OmegaConf, fold: int = 0, split: str = "train"):
-        """
+    """Dataset for handling Heart Rate Variability (HRV) data.
+
+    This dataset loads HRV signals from pickle files, applies preprocessing (cleaning,
+    min-max scaling, chunking), and provides access to samples for model training and evaluation.
+
+    The dataset supports different class configurations and chunking strategies:
+    - Class configs: 'all' (3 classes), 'diab_v_comp' (2 classes), 'comp_v_dpn' (2 classes)
+    - Slice strategies: 'sliding' (overlapping), 'chunked' (non-overlapping)
+
+    Attributes:
+        raw_data (List[Dict]): Raw HRV data for each patient
+        n_peaks_per_sample (int): Number of HRV peaks to include in each sample
+        min_val (float): Minimum HRV value for scaling
+        max_val (float): Maximum HRV value for scaling
+        slice_strategy (str): Strategy for generating chunks ('sliding' or 'chunked')
+        class_config (str): Class configuration ('all', 'diab_v_comp', or 'comp_v_dpn')
+        chunks (List[Dict]): Processed data chunks ready for training
+    """
+
+    def __init__(self, config: OmegaConf, fold: int = 0, split: str = "train") -> None:
+        """Initialize the HRV dataset with the given configuration.
+
         Args:
-            config (OmegaConf): Omegaconf configuration object containing data parameters
+            config (OmegaConf): Configuration object containing data parameters
+            fold (int, optional): Cross-validation fold to use. Defaults to 0.
+            split (str, optional): Data split to use ('train' or 'val'). Defaults to "train".
         """
         # Load raw HRV data
         hrv_data_path = os.path.join(
@@ -39,11 +61,25 @@ class HRVDataset(Dataset):
         self.chunks = self.generate_chunks()
 
     def __len__(self) -> int:
-        """Return the total number of samples in the dataset."""
+        """Return the total number of samples in the dataset.
+
+        Returns:
+            int: Number of samples (chunks) in the dataset
+        """
         return len(self.chunks)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, str]:
-        """Get a single sample from the dataset."""
+        """Get a single sample from the dataset.
+
+        Args:
+            idx (int): Index of the sample to retrieve
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor, str]: A tuple containing:
+                - data: HRV signal tensor of shape (n_peaks_per_sample,)
+                - label: Class label tensor (0, 1, or 2)
+                - patient_id: ID of the patient the sample belongs to
+        """
         return (
             torch.tensor(self.chunks[idx]["data"], dtype=torch.float32),
             torch.tensor(self.chunks[idx]["label"], dtype=torch.long),
@@ -51,7 +87,11 @@ class HRVDataset(Dataset):
         )
 
     def clean_data(self) -> None:
-        """Clean the data by removing samples with HRV values outside the threshold."""
+        """Clean the data by removing samples with HRV values outside the threshold.
+
+        Removes outlier HRV values that fall outside the defined min and max thresholds.
+        Prints a summary of the number of outliers removed.
+        """
         # Create a new list to store cleaned data
         cleaned_data = []
         total_values = 0
@@ -82,7 +122,13 @@ class HRVDataset(Dataset):
         )
 
     def merge_classes(self) -> None:
-        """Merge classes based on class_config."""
+        """Merge classes based on the specified class_config.
+
+        Supports three configurations:
+        - 'all': Keep original 3 classes (0: diabetes, 1: complications, 2: DPN)
+        - 'diab_v_comp': Binary classification (0: diabetes, 1: complications or DPN)
+        - 'comp_v_dpn': Binary classification (0: diabetes or complications, 1: DPN)
+        """
         assert self.class_config in ["all", "diab_v_comp", "comp_v_dpn"]
         if self.class_config == "all":
             return
@@ -106,7 +152,15 @@ class HRVDataset(Dataset):
     def generate_min_max_scale_values_from_train_set(
         self, hrv_data_dir: str, data_config: str
     ) -> Tuple[float, float]:
-        """Generate min and max values across all data for scaling."""
+        """Generate min and max values from the training set for consistent scaling.
+
+        Args:
+            hrv_data_dir (str): Directory containing HRV data
+            data_config (str): Data configuration name
+
+        Returns:
+            Tuple[float, float]: Minimum and maximum HRV values from the training set
+        """
         # use train and fold 0 even for scaling the validation set
         with open(
             os.path.join(
@@ -121,7 +175,13 @@ class HRVDataset(Dataset):
         return np.min(all_data), np.max(all_data)
 
     def generate_chunks(self) -> List[Dict[str, Union[np.ndarray, int, str]]]:
-        """Generate chunks of data based on slice strategy.
+        """Generate chunks of data based on the specified slice strategy.
+
+        Supports two strategies:
+        - 'sliding': Creates overlapping chunks with stride=1
+        - 'chunked': Creates non-overlapping chunks
+
+        Also handles padding for samples shorter than n_peaks_per_sample.
 
         Returns:
             List[Dict]: List of dictionaries containing:
@@ -163,32 +223,44 @@ class HRVDataset(Dataset):
                         {"data": chunk, "label": label, "patient_id": patient_id}
                     )
 
+        # Count chunks per class
+        class_counts = {}
+        for chunk in chunks:
+            label = chunk["label"]
+            class_counts[label] = class_counts.get(label, 0) + 1
+
+        print("\nChunks per class:")
+        for label in sorted(class_counts.keys()):
+            print(f"Class {label}: {class_counts[label]} chunks")
+
         return chunks
 
     def min_max_scale(self, data: np.ndarray) -> np.ndarray:
         """Apply min-max scaling to the input data.
 
+        Scales the input values to the range [0, 1] using the dataset's min and max values.
+
         Args:
-            data (np.ndarray): Input data to scale
+            data (np.ndarray): Input HRV data to scale
 
         Returns:
-            np.ndarray: Scaled data between 0 and 1
+            np.ndarray: Scaled data in the range [0, 1]
         """
         return (data - self.min_val) / (self.max_val - self.min_val)
 
     def legacy_getitem(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Get a single sample from the dataset.
+        """Legacy method for retrieving samples using random or fixed slicing.
+
+        This method is preserved for backward compatibility but is not used in the
+        current implementation, which uses pre-generated chunks instead.
 
         Args:
-            idx (int): Index of the sample to retrieve
+            idx (int): Index of the patient to retrieve data from
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
                 - x: HRV signal tensor of shape (n_peaks_per_sample,)
-                - label: Class label tensor with values 0, 1, or 2 indicating:
-                    0: No complications
-                    1: Other complications
-                    2: Diabetic peripheral neuropathy
+                - label: Class label tensor (0, 1, or 2)
         """
         # Get sample data
         sample = self.raw_data[idx]
@@ -224,7 +296,23 @@ class HRVDataset(Dataset):
 
 
 def load_dataloaders(config: OmegaConf, fold: int = 0) -> Tuple[DataLoader, DataLoader]:
-    """Load the dataloaders for the training and validation sets."""
+    """Create and return DataLoaders for training and validation sets.
+
+    This function initializes HRVDataset objects for both training and validation,
+    and wraps them in DataLoader objects with the specified configuration.
+
+    Args:
+        config (OmegaConf): Configuration object containing data and DataLoader parameters
+        fold (int, optional): Cross-validation fold to use. Defaults to 0.
+
+    Returns:
+        Tuple[DataLoader, DataLoader]: A tuple containing:
+            - train_loader: DataLoader for training data
+            - val_loader: DataLoader for validation data
+
+    Raises:
+        AssertionError: If the specified HRV data directory does not exist
+    """
     assert os.path.exists(config.hrv_data_dir), "HRV data directory does not exist"
 
     train_dataset = HRVDataset(config, fold, "train")
