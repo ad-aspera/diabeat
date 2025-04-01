@@ -1,12 +1,14 @@
 shared:
   n_peaks_per_sample: 600  # 600 peaks ~= 10 minutes of recording
-  class_config: "all" # "all", "diab_v_comp", "comp_v_dpn"
+  # default set to comp_v_dpn (2 classes)
+  class_config: "comp_v_dpn" # "all", "diab_v_comp", "comp_v_dpn"
 
 model:
   n_peaks_per_sample: null # updated at runtime from shared config
   class_config: null # updated at runtime from shared config
-  pos_encoding_type: "learned"  # "learned" or "sinusoidal"
-  feature_dim: 128  # Transformer embedding size
+  # default = sinusoidal for better generalization (and lower param count)
+  pos_encoding_type: "sinusoidal"  # "learned" or "sinusoidal"
+  dim_model: 128  # Transformer embedding size
   n_heads: 8  # Number of attention heads
   num_encoder_layers: 4  # Transformer encoder layers
   dim_feedforward: 512  # Feedforward dimension
@@ -16,12 +18,7 @@ model:
   # Model hyperparameters
   dropout: 0.3    
 
-  # populated automatically by trainer. set to null
-  num_params: null
-  
-  # class weights for only diabetes, complications, and dpn 
-  use_class_weights: false
-  class_weights: 10
+  num_params: null # updated at runtime
 
 data:
   # path to the hrv data directory
@@ -31,23 +28,21 @@ data:
   
   # split
   slice_strategy: "sliding"  # "sliding" or "chunked"
-  data_config: nabian
+  data_config: nabian_w_index
   class_based_stride: [1, 1]
 
-  min_hrv_threshold: 400
-  max_hrv_threshold: 1300
   # data loader config params
   train:
     batch_size: 8
     num_workers: 4
     shuffle: true
-    pin_memory: true
+    pin_memory: false
     drop_last: true
   val:
-    batch_size: 8
+    batch_size: 2
     num_workers: 4
     shuffle: false
-    pin_memory: true
+    pin_memory: false
     drop_last: true
 
 trainer:
@@ -63,8 +58,8 @@ trainer:
   
   # Optimization hyperparameters
   optim:
-    lr: 1e-3  # Learning rate
-    weight_decay: 1e-5  # Regularization
+    lr: 2e-4  # Learning rate
+    weight_decay: 1e-4  # Regularization
     use_lr_scheduler: false  # Whether to use learning rate scheduler
 
 wandb:

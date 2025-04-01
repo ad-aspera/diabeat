@@ -8,7 +8,9 @@ from torch.utils.data import DataLoader
 from typing import Dict, List, Optional, Tuple
 
 from model import HRVTransformer, num_params, set_seed
-from data import load_dataloaders
+
+# from data import load_dataloaders
+from new_data import load_dataloaders
 
 SRC_PATH = os.path.dirname(os.path.abspath(__file__))
 BASE_PATH = os.path.dirname(SRC_PATH)
@@ -123,7 +125,6 @@ def run_validation(
     device: torch.device,
     cfg: OmegaConf,
     best_val_loss: float,
-    global_step: int,
 ) -> Tuple[Dict[str, float], float]:
     """Run validation on the provided model and dataset.
 
@@ -137,7 +138,6 @@ def run_validation(
         device (torch.device): Device to run validation on
         cfg (OmegaConf): Configuration object
         best_val_loss (float): Best validation loss achieved so far
-        global_step (int): Current global training step
 
     Returns:
         Tuple[Dict[str, float], float]: A tuple containing:
@@ -147,8 +147,6 @@ def run_validation(
     model.eval()
     total_loss = 0
     all_batch_metrics = []
-    all_outputs = []
-    all_targets = []
     steps = 0
 
     with torch.no_grad():
@@ -159,20 +157,12 @@ def run_validation(
             outputs = model(x)
             loss = model.calculate_loss(outputs, y)
 
-            # Store outputs and targets for confusion matrix
-            all_outputs.append(outputs)
-            all_targets.append(y)
-
             # Calculate metrics
             batch_metrics = model.calculate_metrics(outputs, y)
             batch_metrics["loss"] = loss.item()  # Add loss to metrics
             all_batch_metrics.append(batch_metrics)
             total_loss += batch_metrics["loss"]
             steps += 1
-
-    # Concatenate all batches for confusion matrix
-    all_outputs = torch.cat(all_outputs, dim=0)
-    all_targets = torch.cat(all_targets, dim=0)
 
     # Average metrics from all batches
     val_metrics = {}
@@ -191,31 +181,6 @@ def run_validation(
         )
 
     return val_metrics, best_val_loss
-
-
-def get_fixed_batches(
-    loader: DataLoader, n_batches: Optional[int] = None, shuffle: bool = False
-) -> List:
-    """Get a fixed set of batches from a DataLoader for consistent training.
-
-    This function extracts a specified number of batches from a DataLoader,
-    which can be used to ensure consistent data across epochs.
-
-    Args:
-        loader (DataLoader): The data loader to extract batches from
-        n_batches (Optional[int], optional): Number of batches to extract, or None for all. Defaults to None.
-        shuffle (bool, optional): Whether to shuffle the batches. Defaults to False.
-    Returns:
-        List: List of batches, where each batch is a tuple of (inputs, targets, [optional metadata])
-    """
-    batches = []
-    for i, batch in enumerate(loader):
-        if n_batches and i >= n_batches:
-            break
-        batched.append(batch)
-    if shuffle:
-        random.shuffle(batches)
-    return batches
 
 
 def train_epoch(
@@ -256,15 +221,15 @@ def train_epoch(
 
     print(f"Training epoch {epoch+1}")
     for batch in train_batches:
-        x, y = batch[0], batch[1]  # ignore ID if present
-        x, y = x.to(device), y.to(device)
+        x, y = batch[0].to(device), batch[1].to(device)
 
-        optimizer.zero_grad()
         outputs = model(x)
         loss = model.calculate_loss(outputs, y)
 
+        optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
         if scheduler is not None:
             scheduler.step()
 
@@ -308,7 +273,6 @@ def train_epoch(
                 device=device,
                 cfg=cfg,
                 best_val_loss=best_val_loss,
-                global_step=global_step,
             )
 
             # Log validation metrics
@@ -368,27 +332,11 @@ def main(cfg: OmegaConf) -> None:
     )
 
     # Initialize data loaders
-    train_loader, val_loader = load_dataloaders(cfg.data, fold=cfg.trainer.fold)
-
-    # Get fixed batches for training and validation
-    if cfg.trainer.n_batches_train:
-        train_batches = get_fixed_batches(
-            train_loader, cfg.trainer.n_batches_train, cfg.data.train.shuffle
-        )
-    else:
-        train_batches = train_loader
-
-    if cfg.trainer.n_batches_val:
-        val_batches = get_fixed_batches(
-            val_loader, cfg.trainer.n_batches_val, cfg.data.val.shuffle
-        )
-    else:
-        val_batches = val_loader
-
-    # Print total batches
-    print(f"Fixed training batches: {len(train_batches)}")
-    if cfg.trainer.use_validation:
-        print(f"Fixed validation batches: {len(val_batches)}")
+    train_batches, val_batches = load_dataloaders(
+        cfg.data,
+        n_batches_train=cfg.trainer.n_batches_train,
+        n_batches_val=cfg.trainer.n_batches_val,
+    )
 
     # Initialize optimizer and scheduler
     optimizer = torch.optim.AdamW(
@@ -408,6 +356,12 @@ def main(cfg: OmegaConf) -> None:
     global_step = 0
 
     for epoch in range(cfg.trainer.epochs):
+        # random shuffle batches if needed
+        if cfg.data.train.shuffle and isinstance(train_batches, list):
+            random.shuffle(train_batches)
+        if cfg.data.val.shuffle and isinstance(val_batches, list):
+            random.shuffle(val_batches)
+
         # Training phase
         model.train()
         global_step, best_val_loss = train_epoch(

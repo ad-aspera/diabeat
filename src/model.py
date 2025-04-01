@@ -1,3 +1,4 @@
+import math
 import random
 import numpy as np
 import torch
@@ -48,27 +49,12 @@ class HRVTransformer(nn.Module):
         super().__init__()
         self.config = config
 
-        # Feature projection for raw HRV input
-        self.feature_linear = nn.Linear(1, self.config.feature_dim)
-        self.feature_ln = nn.LayerNorm(self.config.feature_dim)
-
-        # Positional encoding setup
-        assert self.config.pos_encoding_type in ["learned", "sinusoidal"]
-        if self.config.pos_encoding_type == "learned":
-            self.pos_embedding = nn.Embedding(
-                self.config.n_peaks_per_sample + 1, self.config.feature_dim
-            )
-        else:  # sinusoidal
-            self.register_buffer(
-                "pos_embedding",
-                self._create_sinusoidal_encoding(
-                    self.config.n_peaks_per_sample + 1, self.config.feature_dim
-                ),
-            )
+        # required for positional encoding
+        self.dim_model = config.dim_model
 
         # Transformer encoder
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=self.config.feature_dim,
+            d_model=self.dim_model,
             nhead=self.config.n_heads,
             dim_feedforward=self.config.dim_feedforward,
             batch_first=True,
@@ -77,50 +63,61 @@ class HRVTransformer(nn.Module):
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer, num_layers=self.config.num_encoder_layers
         )
-        self.transformer_ln = nn.LayerNorm(self.config.feature_dim)
+        self.transformer_ln = nn.LayerNorm(self.dim_model)
 
         # Initialize CLS token with smaller values
-        self.cls_token = nn.Parameter(torch.randn(1, 1, self.config.feature_dim) * 0.02)
+        self.cls_token = nn.Parameter(torch.randn(1, 1, self.dim_model) * 0.02)
 
         # Add layer normalization before classification
         self.n_outs = 3 if self.config.class_config == "all" else 1
 
-        self.classifier_head = nn.Linear(self.config.feature_dim, self.n_outs)
+        self.classifier_head = nn.Linear(self.dim_model, self.n_outs)
 
-        # Initialize metrics - will be created dynamically during calculation
-        if self.config.use_class_weights:
-            assert len(self.config.class_weights) == self.n_outs, (
-                f"Number of class weights ({len(self.config.class_weights)}) must match "
-                f"number of outputs ({self.n_outs})"
-            )
-            print(f"Using class weights: {self.config.class_weights}")
-            self.class_weights = torch.tensor(self.config.class_weights)
-        else:
-            self.class_weights = None
-
-    def _create_sinusoidal_encoding(self, seq_len: int, d_model: int) -> torch.Tensor:
-        """Create sinusoidal positional encodings for the transformer.
-
-        Implements the fixed sinusoidal encoding described in the paper
-        "Attention Is All You Need" for providing position information.
+    def get_time_positional_encoding(
+        self,
+        time_indices: torch.Tensor | list[int],
+        max_len: int = 135000,
+    ) -> torch.Tensor:
+        """Compute 1D positional encodings using sine and cosine functions.
 
         Args:
-            seq_len (int): Maximum sequence length
-            d_model (int): Dimension of the model (feature dimension)
+            d_model (int): Dimension of the model embeddings. Must be even.
+            time_indices (torch.Tensor | list[int]): Time indices for which to compute encodings.
+                Shape: (batch_size, N) where N is the number of positions per sample.
 
         Returns:
-            torch.Tensor: Positional encodings tensor of shape (seq_len, d_model)
+            torch.Tensor: Positional encodings matrix of shape (batch_size, N, d_model) where:
+                - batch_size is the number of samples
+                - N is the number of positions per sample
+                - d_model is the embedding dimension
+
+        Raises:
+            ValueError: If d_model is odd
         """
-        position = torch.arange(seq_len).unsqueeze(1)
-        div_term = torch.exp(
-            torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model)
+        if self.dim_model % 2 != 0:
+            raise ValueError(
+                "Cannot use sin/cos positional encoding with "
+                "odd dim (got dim={:d})".format(self.dim_model)
+            )
+
+        assert isinstance(time_indices, torch.Tensor), "time_indices must be a tensor"
+
+        batch_size, seq_len = time_indices.shape
+        pe = torch.zeros(
+            batch_size, seq_len, self.dim_model, device=time_indices.device
         )
-
-        pos_encoding = torch.zeros(seq_len, d_model)
-        pos_encoding[:, 0::2] = torch.sin(position * div_term)
-        pos_encoding[:, 1::2] = torch.cos(position * div_term)
-
-        return pos_encoding
+        position = time_indices.unsqueeze(-1)
+        div_term = torch.exp(
+            (
+                torch.arange(
+                    0, self.dim_model, 2, dtype=torch.float, device=time_indices.device
+                )
+                * -(math.log(max_len) / self.dim_model)
+            )
+        )
+        pe[..., 0::2] = torch.sin(position.float() * div_term)
+        pe[..., 1::2] = torch.cos(position.float() * div_term)
+        return pe
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through the transformer model.
@@ -138,24 +135,14 @@ class HRVTransformer(nn.Module):
                 For binary classification (n_outs=1), a single logit per sample
                 For multiclass (n_outs=3), logits for each class
         """
-        # Ensure input shape is [batch_size, n_peaks_per_sample, 1]
-        if x.dim() == 2:
-            x = x.unsqueeze(-1)
-        x = self.feature_linear(x)
-        x = self.feature_ln(x)
+        # of shape (batch_size, n_peaks_per_sample, dim_model)
+        pos_emb = self.get_time_positional_encoding(x)
 
         # Add CLS token to beginning of sequence
         cls_tokens = self.cls_token.expand(x.shape[0], -1, -1)
-        x = torch.cat((cls_tokens, x), dim=1)
 
-        # Add positional embeddings
-        if self.config.pos_encoding_type == "learned":
-            positions = torch.arange(x.size(1), device=x.device).unsqueeze(0)
-            pos_emb = self.pos_embedding(positions)
-        else:  # sinusoidal
-            pos_emb = self.pos_embedding[: x.size(1)].unsqueeze(0)
-
-        x = x + pos_emb.expand(x.shape[0], -1, -1)
+        # x is of shape (batch_size, n_peaks_per_sample + 1, dim_model)
+        x = torch.cat((cls_tokens, pos_emb), dim=1)
 
         # Transformer encoder
         x = self.transformer_encoder(x)
@@ -285,21 +272,10 @@ class HRVTransformer(nn.Module):
             torch.Tensor: Loss value as a tensor
         """
         if self.n_outs == 1:
-            # Binary classification with BCE loss
-            if self.config.use_class_weights:
-                class_weights = self.class_weights.to(outputs.device)
-                pos_weight = class_weights  # Weight for positive class
-                return F.binary_cross_entropy_with_logits(
-                    outputs.squeeze(), targets.float(), pos_weight=pos_weight
-                )
             return F.binary_cross_entropy_with_logits(
                 outputs.squeeze(), targets.float()
             )
         else:
-            # Multiclass with cross entropy
-            if self.config.use_class_weights:
-                class_weights = self.class_weights.to(outputs.device)
-                return F.cross_entropy(outputs, targets.long(), weight=class_weights)
             return F.cross_entropy(outputs, targets.long())
 
 
@@ -327,3 +303,19 @@ def num_params(model: nn.Module) -> int:
         int: Total number of parameters in the model
     """
     return sum(p.numel() for p in model.parameters())
+
+
+def move_batch_to_device(
+    batch: list[torch.Tensor], device: torch.device
+) -> list[torch.Tensor]:
+    """Move all tensors in a batch to a specified device.
+
+    Args:
+        batch (list[torch.Tensor]): Batch of tensors to move
+        device (torch.device): Device to move tensors to
+
+    Returns:
+        list[torch.Tensor]: Batch with tensors moved to the specified device
+    """
+    batch = [item.to(device) for item in batch if isinstance(item, torch.Tensor)]
+    return batch
