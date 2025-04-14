@@ -188,7 +188,7 @@ def train_epoch(
     train_batches: List,
     val_batches: List,
     optimizer: torch.optim.Optimizer,
-    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
+    scheduler: Optional[Dict[str, torch.optim.lr_scheduler._LRScheduler]],
     device: torch.device,
     epoch: int,
     cfg: OmegaConf,
@@ -205,7 +205,7 @@ def train_epoch(
         train_batches (List): List of training data batches
         val_batches (List): List of validation data batches
         optimizer (torch.optim.Optimizer): Optimizer for updating model parameters
-        scheduler (Optional[torch.optim.lr_scheduler._LRScheduler]): Optional learning rate scheduler
+        scheduler (Optional[Dict[str, torch.optim.lr_scheduler._LRScheduler]]): Optional learning rate scheduler
         device (torch.device): Device to run training on
         epoch (int): Current epoch number
         cfg (OmegaConf): Configuration object
@@ -218,6 +218,7 @@ def train_epoch(
             - Updated best validation loss
     """
     steps = 0
+    epoch_train_loss = 0.0  # Track average training loss for the epoch
 
     print(f"Training epoch {epoch+1}")
     for batch in train_batches:
@@ -231,11 +232,15 @@ def train_epoch(
         optimizer.step()
 
         if scheduler is not None:
-            scheduler.step()
+            # Step the warmup scheduler
+            if global_step < 1000:
+                scheduler["warmup"].step()
+            # The plateau scheduler will be stepped at the end of epoch based on train loss
 
         # Calculate metrics for step-level logging only
         batch_metrics = model.calculate_metrics(outputs, y)
         batch_metrics["loss"] = loss.item()  # Add loss to metrics
+        epoch_train_loss += loss.item()  # Accumulate training loss
 
         steps += 1
         global_step += 1
@@ -251,9 +256,9 @@ def train_epoch(
                     "train/step_precision": batch_metrics["precision"],
                     "train/step_recall": batch_metrics["recall"],
                     "train/learning_rate": (
-                        scheduler.get_last_lr()[0]
-                        if scheduler
-                        else cfg.trainer.optim.lr
+                        cfg.trainer.optim.lr
+                        if not scheduler
+                        else scheduler["warmup"].get_last_lr()[0]
                     ),
                     "epoch": epoch,
                 },
@@ -288,6 +293,13 @@ def train_epoch(
             )
 
             model.train()
+
+    # Calculate average training loss for the epoch
+    avg_train_loss = epoch_train_loss / steps
+
+    # Step the plateau scheduler based on training loss at the end of epoch
+    if scheduler is not None and global_step >= 1000:
+        scheduler["plateau"].step(avg_train_loss)
 
     # Save model checkpoint after each epoch
     save_checkpoint(
@@ -347,9 +359,21 @@ def main(cfg: OmegaConf) -> None:
 
     scheduler = None
     if cfg.trainer.optim.use_lr_scheduler:
-        scheduler = torch.optim.lr_scheduler.LinearLR(
-            optimizer, start_factor=0.01, total_iters=100  # warmup steps
+        # First create the warmup scheduler
+        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=0.01,
+            total_iters=1000,  # 1000 steps warmup
+            end_factor=1.0,
         )
+
+        # Then create the plateau scheduler
+        plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.5, patience=5, verbose=True
+        )
+
+        # Combine both schedulers
+        scheduler = {"warmup": warmup_scheduler, "plateau": plateau_scheduler}
 
     # Training loop
     best_val_loss = float("inf")
