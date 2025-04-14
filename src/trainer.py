@@ -7,10 +7,15 @@ from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 from typing import Dict, List, Optional, Tuple
 
+SRC_PATH = os.path.dirname(os.path.abspath(__file__))
+BASE_PATH = os.path.dirname(SRC_PATH)
+
+import sys
+sys.path.append(SRC_PATH)
+
 from model import HRVTransformer, num_params, set_seed
 
-# from data import load_dataloaders
-from new_data import load_dataloaders
+from data import load_dataloaders
 
 SRC_PATH = os.path.dirname(os.path.abspath(__file__))
 BASE_PATH = os.path.dirname(SRC_PATH)
